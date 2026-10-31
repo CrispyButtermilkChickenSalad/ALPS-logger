@@ -10,6 +10,26 @@ printer's print state).
 > The serial protocol was reverse-engineered from Mellow's official web configuration tool
 > (<https://mellow.klipper.cn/en/docs/ToolsDoc/fly-alps-tool>). It is not an officially documented protocol and may change with firmware.
 
+## Web app (GitHub Pages) – no install
+
+**https://crispybuttermilkchickensalad.github.io/ALPS-logger/**
+
+A static, client-side app (source in `docs/`): Web Serial reads the ALPS over USB-C, data is stored in your browser (IndexedDB),
+sessions can be viewed and exported as CSV. Nothing is uploaded.
+
+- Needs a Chromium browser (Chrome/Edge desktop). Close Mellow's web tool first – only one program can hold the port.
+- Keep the tab open while recording (optional "keep screen awake").
+- **Optional Moonraker/Klipper:** enter the Moonraker URL to auto-start/stop a recording per print and log toolhead Z.
+  Moonraker must list the page origin in `[authorization] cors_domains`. An https page cannot call a plain `http://` Moonraker
+  (mixed content) unless you run the page from `http://localhost` (`python -m http.server --directory docs`),
+  serve Moonraker over https, or allow insecure content for the site.
+- Try it without hardware using the **Simulator** button.
+- Tests: `npm test`.
+
+For unattended, always-on logging next to the printer, use the Python service below.
+
+## Python service (headless option)
+
 ## Protocol summary
 
 115200 baud, text, newline-terminated (firmware 1.0 / 1.0.0 expects commands **without** a trailing newline; the logger detects this).

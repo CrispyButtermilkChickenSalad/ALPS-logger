@@ -1,0 +1,6 @@
+{
+  "name": "alps-logger-web",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests-js/*.test.js" }
+}

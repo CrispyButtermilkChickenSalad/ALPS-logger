@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALPS logger</title>
+<style>
+  :root { --bg:#14161a; --panel:#1e2127; --fg:#e6e6e6; --dim:#8a919c; --accent:#4da3ff; --bad:#ff6b6b; --ok:#5ad17a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); }
+  h1 { font-size:16px; margin:0 12px 0 0; }
+  .pill { padding:2px 10px; border-radius:12px; background:#2c313a; color:var(--dim); }
+  .pill.ok { background:#1f3a2a; color:var(--ok); } .pill.bad { background:#472626; color:var(--bad); }
+  main { padding:16px; display:grid; gap:16px; max-width:1200px; margin:auto; }
+  section { background:var(--panel); border-radius:8px; padding:12px 16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 10px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px; }
+  button, input, select { background:#2c313a; color:var(--fg); border:1px solid #3a404a; border-radius:6px; padding:6px 10px; font:inherit; }
+  button { cursor:pointer; } button:hover:not(:disabled) { border-color:var(--accent); } button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); color:#04121f; border-color:var(--accent); } button.danger { color:var(--bad); }
+  canvas { width:100%; height:340px; display:block; background:#101215; border-radius:6px; }
+  table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #2c313a; }
+  th { color:var(--dim); font-weight:500; } tr.sel { background:#232a34; }
+  pre { margin:0; max-height:120px; overflow:auto; color:var(--dim); font-size:12px; }
+  .legend span { margin-right:14px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+  .warn { display:none; background:#473a1d; color:#ffd479; padding:8px 12px; border-radius:6px; margin-bottom:10px; }
+  .hint { color:var(--dim); font-size:12px; margin:6px 0 0; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ALPS logger</h1>
+  <span id="pDev" class="pill">device: –</span>
+  <span id="pRate" class="pill">– Hz</span>
+  <span id="pPrint" class="pill">print: –</span>
+  <span id="pRec" class="pill">not recording</span>
+  <span id="pZ" class="pill">Z –</span>
+  <span style="flex:1"></span>
+  <a href="https://github.com/CrispyButtermilkChickenSalad/ALPS-logger" target="_blank" rel="noopener">GitHub</a>
+</header>
+<main>
+  <div id="noSerial" class="warn">This browser has no Web Serial API. Use Chrome or Edge on desktop (or the simulator below). Firefox and Safari are not supported.</div>
+  <div id="noDb" class="warn"></div>
+  <section>
+    <h2>Device &amp; live data</h2>
+    <div class="row">
+      <button id="btnSerial" class="primary">Connect ALPS (USB)</button>
+      <button id="btnSim">Simulator</button>
+      <button id="btnDisc" style="display:none">Disconnect</button>
+      <span style="width:12px"></span>
+      <button id="btnStart" class="primary">Start recording</button>
+      <button id="btnStop">Stop</button>
+      <label>Window <select id="win"><option value="15">15 s</option><option value="60" selected>1 min</option><option value="300">5 min</option></select></label>
+      <label>Threshold <input id="thr" type="number" min="0" style="width:100px"></label>
+      <button id="btnSet" disabled>Set</button><button id="btnRead" disabled>Read</button>
+      <span class="legend"><span><i style="background:#ffa726"></i>raw</span><span><i style="background:#4da3ff"></i>filtered</span><span><i style="background:#7bd88f"></i>Z</span></span>
+    </div>
+    <canvas id="live"></canvas>
+    <pre id="log"></pre>
+    <p class="hint">Data stays in this browser (IndexedDB) – nothing is uploaded. Close Mellow's web tool first: only one program can use the serial port. Keep this tab open while recording.</p>
+  </section>
+  <section>
+    <h2>Klipper / Moonraker (optional)</h2>
+    <div id="mrWarn" class="warn">This page is served over https, so the browser blocks requests to a plain <code>http://</code> Moonraker on your network.
+      Options: open this tool from <code>http://localhost</code> (see the README), serve Moonraker over https, or allow "Insecure content" for this site in your browser's site settings.</div>
+    <div class="row">
+      <label>Moonraker URL <input id="mrUrl" placeholder="http://192.168.1.50:7125" style="width:260px"></label>
+      <label>API key <input id="mrKey" type="password" placeholder="(optional)" style="width:160px"></label>
+      <button id="btnMr">Enable</button>
+      <span id="mrState" class="pill">off</span>
+      <label title="Stops the screen from sleeping so the tab keeps running during long prints"><input id="wake" type="checkbox"> keep screen awake</label>
+    </div>
+    <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
+  </section>
+  <section>
+    <h2>Recorded sessions</h2>
+    <canvas id="view" style="display:none"></canvas>
+    <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
+    <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
+  </section>
+</main>
+<script type="module" src="js/ui.js"></script>
+</body>
+</html>

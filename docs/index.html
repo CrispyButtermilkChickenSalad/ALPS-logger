@@ -55,6 +55,7 @@
   <button data-tab="live" class="on">Live &amp; sessions</button>
   <button data-tab="gcode">G-code preview</button>
   <button data-tab="calib">Calibration</button>
+  <button data-tab="pa">PA test</button>
 </nav>
 <main>
   <div id="noSerial" class="warn">This browser has no Web Serial API. Use Chrome or Edge on desktop (or the simulator below). Firefox and Safari are not supported.</div>
@@ -172,6 +173,71 @@
         <button id="eUse" disabled>Use estimate</button>
       </div>
       <p class="hint">The estimate assumes a standard Wheatstone-bridge load cell read by the ADS131M02 (a 1 count LSB is 143 nV / gain). Mellow does not publish the ALPS sensor or gain, so treat it as an order of magnitude only; a known-mass calibration always overrides it. Default is raw counts.</p>
+    </section>
+  </div>
+  <div id="tab-pa" class="tab" hidden>
+    <section>
+      <h2>1. Generate a test G-code</h2>
+      <div class="row">
+        <label>Mode <select id="pMode"><option value="air">In air (no contact)</option><option value="line">Lines on bed (contact)</option></select></label>
+        <label>K start <input id="p_kstart" type="number" step="any" style="width:70px"></label>
+        <label>K end <input id="p_kend" type="number" step="any" style="width:70px"></label>
+        <label>K step <input id="p_kstep" type="number" step="any" style="width:70px"></label>
+        <label>Cycles/K <input id="p_cycles" type="number" style="width:60px"></label>
+      </div>
+      <div class="row">
+        <label>Slow s <input id="p_tslow" type="number" step="any" style="width:60px"></label>
+        <label>Fast s <input id="p_tfast" type="number" step="any" style="width:60px"></label>
+        <label>Gap s <input id="p_tgap" type="number" step="any" style="width:60px"></label>
+        <label>Fast mm³/s <input id="p_vfr" type="number" step="any" style="width:70px"></label>
+        <label>Slow mm³/s <input id="p_vfrLow" type="number" step="any" style="width:70px"></label>
+        <label>Filament Ø <input id="p_filament" type="number" step="any" style="width:60px"></label>
+        <label>Accel <input id="p_accel" type="number" style="width:70px"></label>
+      </div>
+      <div class="row">
+        <label>Wobble mm <input id="p_wobble" type="number" step="any" style="width:60px"></label>
+        <label>Axis <select id="pAxis"><option>Y</option><option>X</option></select></label>
+        <label>Park X <input id="p_parkx" type="number" style="width:60px"></label>
+        <label>Y <input id="p_parky" type="number" style="width:60px"></label>
+        <label>Z <input id="p_parkz" type="number" style="width:60px"></label>
+        <span class="hint">air mode</span>
+      </div>
+      <div class="row">
+        <label>Slow speed <input id="p_vSlow" type="number" style="width:60px"></label>
+        <label>Fast speed <input id="p_vFast" type="number" style="width:60px"></label>
+        <label>Width <input id="p_width" type="number" step="any" style="width:60px"></label>
+        <label>Height <input id="p_height" type="number" step="any" style="width:60px"></label>
+        <label>X0 <input id="p_x0" type="number" style="width:60px"></label>
+        <label>Y0 <input id="p_y0" type="number" style="width:60px"></label>
+        <label>Y step <input id="p_yStep" type="number" step="any" style="width:60px"></label>
+        <label>Retract <input id="p_retract" type="number" step="any" style="width:60px"></label>
+        <label>Max line <input id="p_bedLen" type="number" style="width:60px"></label>
+        <span class="hint">line mode</span>
+      </div>
+      <div class="row"><button id="pGen" class="primary">Generate</button><button id="pDl" disabled>Download .gcode</button><span id="pInfo" class="pill">–</span></div>
+      <div id="pNotes"></div>
+      <textarea id="pOut" readonly rows="8" style="width:100%;font-family:monospace;font-size:11px"></textarea>
+      <p class="hint">Print it while recording on the Live tab (or with Moonraker), keep the recording running before and after. Run the in-air sweep first as a contact-free reference.</p>
+    </section>
+    <section>
+      <h2>2. Analyse a recording</h2>
+      <div class="row">
+        <label>Session <select id="aSession"></select></label>
+        <label>Polarity <select id="aInvert"><option value="auto">auto</option><option value="no">as is</option><option value="yes">invert</option></select></label>
+        <label>From s <input id="aStart" type="number" step="any" style="width:70px"></label>
+        <label>To s <input id="aEnd" type="number" step="any" style="width:70px"></label>
+        <label>Skip blocks <input id="aOffset" type="number" value="0" style="width:50px"></label>
+        <button id="aRun" class="primary">Analyse</button><span id="aStatus" class="pill">–</span>
+      </div>
+      <p class="hint">Uses the timing and K settings above. Bursts are found from the signal itself, so no clock sync with the printer is needed. Use "Skip blocks" if earlier test blocks are in the same recording.</p>
+      <div id="aWarn"></div>
+      <div id="aResult" hidden>
+        <div class="row"><span class="big" id="aKc">–</span><span class="pill" id="aKs">–</span></div>
+        <canvas id="aOverlay" style="width:100%;height:240px"></canvas>
+        <canvas id="aMetric" style="width:100%;height:200px"></canvas>
+        <table><thead><tr><th>K</th><th>bursts</th><th>step</th><th>overshoot</th><th>undershoot</th><th>creep</th><th>tail</th><th>S</th></tr></thead><tbody id="aRows"></tbody></table>
+        <p class="hint">Over-compensated K shows overshoot/undershoot (S &gt; 0); under-compensated K shows a slow rise and tail (S &lt; 0). Metrics are relative to the force step. K_opt is where S crosses zero; the composite cost minimum is a cross-check.</p>
+      </div>
     </section>
   </div>
 </main>

@@ -1,6 +1,7 @@
 import { parseGcode } from './gcode.js';
 import { TimeMap, autoSync, aggregate, extractPoses, loadColumns, percentile, medianOf } from './sync.js';
 import { Viewer, toBins, gradientCss } from './viewer3d.js';
+import { initPa } from './ui_pa.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB } from './calib.js';
 
@@ -10,12 +11,13 @@ const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : 
 export function initTabs({ db, live }) {
   let calib = loadCalib(localStorage);
   const S = { id: null, session: null, cols: null, poses: null, g: null, map: null, agg: null, aggSignal: null };
-  let viewer = null;
+  let viewer = null, pa = null;
 
   // ---- tabs -------------------------------------------------------------------------
   const show = (name) => {
     document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
-    for (const t of ['live', 'gcode', 'calib']) $('tab-' + t).hidden = t !== name;
+    for (const t of ['live', 'gcode', 'calib', 'pa']) $('tab-' + t).hidden = t !== name;
+    if (name === 'pa') { if (!pa) pa = initPa({ db }); pa.refresh(); }
     if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); } refreshSessions(); viewer.redraw(); }
   };
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));

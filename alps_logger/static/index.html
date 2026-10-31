@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALPS logger</title>
+<style>
+  :root { --bg:#14161a; --panel:#1e2127; --fg:#e6e6e6; --dim:#8a919c; --accent:#4da3ff; --raw:#ffa726; --z:#7bd88f; --bad:#ff6b6b; --ok:#5ad17a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); }
+  h1 { font-size:16px; margin:0 12px 0 0; }
+  .pill { padding:2px 10px; border-radius:12px; background:#2c313a; color:var(--dim); }
+  .pill.ok { background:#1f3a2a; color:var(--ok); } .pill.bad { background:#472626; color:var(--bad); }
+  main { padding:16px; display:grid; gap:16px; max-width:1200px; margin:auto; }
+  section { background:var(--panel); border-radius:8px; padding:12px 16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 10px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px; }
+  button, input, select { background:#2c313a; color:var(--fg); border:1px solid #3a404a; border-radius:6px; padding:6px 10px; font:inherit; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); } button.primary { background:var(--accent); color:#04121f; border-color:var(--accent); }
+  button.danger { color:var(--bad); }
+  canvas { width:100%; height:340px; display:block; background:#101215; border-radius:6px; }
+  table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #2c313a; }
+  th { color:var(--dim); font-weight:500; } tr.sel { background:#232a34; }
+  pre { margin:0; max-height:120px; overflow:auto; color:var(--dim); font-size:12px; }
+  .legend span { margin-right:14px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ALPS logger</h1>
+  <span id="pDev" class="pill">device: –</span>
+  <span id="pRate" class="pill">– Hz</span>
+  <span id="pPrint" class="pill">print: –</span>
+  <span id="pRec" class="pill">not recording</span>
+  <span id="pZ" class="pill">Z –</span>
+</header>
+<main>
+  <section>
+    <h2>Live</h2>
+    <div class="row">
+      <button id="btnStart" class="primary">Start recording</button>
+      <button id="btnStop">Stop</button>
+      <label>Window <select id="win"><option value="15">15 s</option><option value="60" selected>1 min</option><option value="300">5 min</option></select></label>
+      <label>Threshold <input id="thr" type="number" min="0" style="width:100px"></label>
+      <button id="btnSet">Set</button><button id="btnRead">Read</button>
+      <span class="legend"><span><i style="background:var(--raw)"></i>raw</span><span><i style="background:var(--accent)"></i>filtered</span><span><i style="background:var(--z)"></i>Z</span></span>
+    </div>
+    <canvas id="live"></canvas>
+    <pre id="log"></pre>
+  </section>
+  <section>
+    <h2>Recorded prints</h2>
+    <canvas id="view" style="display:none"></canvas>
+    <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
+    <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const api = (path, opts) => fetch(path, opts).then(async r => { if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); });
+const post = (p, body) => api(p, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
+
+// ---- chart ---------------------------------------------------------------
+// data = {t:[], raw:[], lo:[], hi:[], filt:[], z:[]}  (t in seconds)
+function drawChart(canvas, data, o) {
+  const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d'); g.scale(dpr, dpr);
+  g.fillStyle = '#101215'; g.fillRect(0, 0, W, H);
+  const L = 56, R = 12, T = 8, B = 22;
+  const hasZ = data.z.some(v => v != null);
+  const zH = hasZ ? Math.round((H - T - B) * 0.25) : 0, gap = hasZ ? 8 : 0;
+  const sigH = H - T - B - zH - gap;
+  const [x0, x1] = o.xRange;
+  const px = t => L + (t - x0) / (x1 - x0 || 1) * (W - L - R);
+  canvas._map = {L, R, W, x0, x1};
+  const idx = [];
+  for (let i = 0; i < data.t.length; i++) if (data.t[i] >= x0 && data.t[i] <= x1) idx.push(i);
+  const vals = [];
+  for (const i of idx) for (const k of ['lo', 'hi', 'filt']) if (data[k][i] != null) vals.push(data[k][i]);
+  if (o.threshold != null) vals.push(o.threshold);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  const pad = (hi - lo || 1) * 0.08; lo -= pad; hi += pad;
+  const py = v => T + sigH - (v - lo) / (hi - lo) * sigH;
+  g.font = '11px monospace'; g.fillStyle = '#8a919c'; g.strokeStyle = '#262b33'; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = T + sigH * i / 4; g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke();
+    g.textAlign = 'right'; g.fillText(Math.round(hi - (hi - lo) * i / 4), L - 6, y + 4);
+  }
+  g.textAlign = 'center';
+  for (let i = 0; i <= 6; i++) {
+    const t = x0 + (x1 - x0) * i / 6; g.fillText((t - o.tZero).toFixed(1) + 's', px(t), H - 6);
+  }
+  const line = (arr, color, w) => {
+    g.strokeStyle = color; g.lineWidth = w; g.beginPath(); let pen = false;
+    for (const i of idx) { const v = arr[i]; if (v == null) { pen = false; continue; }
+      const x = px(data.t[i]), y = py(v); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
+    g.stroke();
+  };
+  if (o.band) {
+    g.fillStyle = 'rgba(255,167,38,0.25)'; g.beginPath(); let started = false;
+    for (const i of idx) if (data.hi[i] != null) { const x = px(data.t[i]), y = py(data.hi[i]); started ? g.lineTo(x, y) : g.moveTo(x, y); started = true; }
+    for (let k = idx.length - 1; k >= 0; k--) { const i = idx[k]; if (data.lo[i] != null) g.lineTo(px(data.t[i]), py(data.lo[i])); }
+    g.fill();
+  }
+  line(data.raw, '#ffa726', 1); line(data.filt, '#4da3ff', 1.5);
+  if (o.threshold != null) {
+    g.setLineDash([6, 4]); g.strokeStyle = '#ff6b6b'; g.beginPath(); g.moveTo(L, py(o.threshold)); g.lineTo(W - R, py(o.threshold)); g.stroke(); g.setLineDash([]);
+  }
+  if (hasZ) {
+    const zs = idx.map(i => data.z[i]).filter(v => v != null);
+    let zl = Math.min(...zs), zh = Math.max(...zs); if (zh === zl) { zh += 1; zl -= 1; }
+    const top = T + sigH + gap, zy = v => top + zH - (v - zl) / (zh - zl) * zH;
+    g.strokeStyle = '#262b33'; g.strokeRect(L, top, W - L - R, zH);
+    g.fillStyle = '#8a919c'; g.textAlign = 'right'; g.fillText(zh.toFixed(1), L - 6, top + 10); g.fillText(zl.toFixed(1), L - 6, top + zH);
+    g.strokeStyle = '#7bd88f'; g.lineWidth = 1.2; g.beginPath(); let pen = false;
+    for (const i of idx) { const v = data.z[i]; if (v == null) { pen = false; continue; } const x = px(data.t[i]), y = zy(v); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
+    g.stroke();
+  }
+}
+
+// ---- live ----------------------------------------------------------------
+const live = {t: [], raw: [], lo: [], hi: [], filt: [], z: []};
+let status = {};
+function pushLive(rows) {
+  for (const [t, raw, filt, z] of rows) {
+    live.t.push(t); live.raw.push(raw); live.lo.push(raw); live.hi.push(raw); live.filt.push(filt); live.z.push(z);
+  }
+  const cutoff = (live.t[live.t.length - 1] || 0) - 330;
+  let n = 0; while (n < live.t.length && live.t[n] < cutoff) n++;
+  if (n) for (const k in live) live[k].splice(0, n);
+}
+function renderLive() {
+  if (live.t.length) {
+    const end = live.t[live.t.length - 1], w = +$('win').value;
+    drawChart($('live'), live, {xRange: [end - w, end], tZero: end, threshold: status.threshold});
+  }
+  requestAnimationFrame(renderLive);
+}
+function applyStatus(s) {
+  status = s;
+  const dev = $('pDev'); dev.textContent = s.connected ? `device: v${s.version}` : `device: ${s.device_error || 'disconnected'}`; dev.className = 'pill ' + (s.connected ? 'ok' : 'bad');
+  $('pRate').textContent = s.rate_hz + ' Hz';
+  $('pPrint').textContent = 'print: ' + (s.moonraker_ok === null ? 'no Moonraker' : s.moonraker_ok ? `${s.print_state}${s.filename ? ' – ' + s.filename : ''}` : 'Moonraker unreachable');
+  const rec = $('pRec'); rec.textContent = s.session_id ? `recording #${s.session_id} (${s.session_name})` : 'not recording'; rec.className = 'pill ' + (s.session_id ? 'ok' : '');
+  $('pZ').textContent = 'Z ' + (s.z == null ? '–' : s.z.toFixed(2));
+  $('btnStart').disabled = !!s.session_id; $('btnStop').disabled = !s.session_id;
+  if (s.threshold != null && document.activeElement !== $('thr')) $('thr').value = s.threshold;
+  $('log').textContent = (s.messages || []).join('\n');
+}
+let lastSession = null;
+function connectWS() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'history') { for (const k in live) live[k].length = 0; pushLive(m.data); }
+    else if (m.type === 'samples') pushLive(m.data);
+    else if (m.type === 'status') {
+      applyStatus(m.data);
+      if (lastSession !== m.data.session_id) { lastSession = m.data.session_id; loadSessions(); }
+    }
+  };
+  ws.onclose = () => setTimeout(connectWS, 1500);
+}
+
+// ---- controls ------------------------------------------------------------
+$('btnStart').onclick = () => post('/api/session/start', {name: prompt('Session name (optional)') || null}).catch(e => alert(e.message));
+$('btnStop').onclick = () => post('/api/session/stop').catch(e => alert(e.message));
+$('btnSet').onclick = () => post('/api/threshold', {value: +$('thr').value}).catch(e => alert(e.message));
+$('btnRead').onclick = () => post('/api/threshold/read').catch(e => alert(e.message));
+
+// ---- recorded sessions -----------------------------------------------------
+let view = null, selected = null;
+const fmt = ts => new Date(ts * 1000).toLocaleString();
+const dur = s => { const d = (s.ended || Date.now() / 1000) - s.started; return d >= 3600 ? (d / 3600).toFixed(2) + ' h' : d >= 60 ? (d / 60).toFixed(1) + ' min' : d.toFixed(0) + ' s'; };
+async function loadSessions() {
+  const rows = await api('/api/sessions');
+  $('tbody').innerHTML = '';
+  for (const s of rows) {
+    const tr = document.createElement('tr'); if (s.id === selected) tr.className = 'sel';
+    tr.innerHTML = `<td>${s.id}</td><td></td><td>${fmt(s.started)}</td><td>${dur(s)}${s.ended ? '' : ' ●'}</td><td>${s.n}</td><td></td>`;
+    tr.children[1].textContent = s.name;
+    const v = document.createElement('button'); v.textContent = 'View'; v.onclick = () => openSession(s.id);
+    const c = document.createElement('a'); c.href = `/api/sessions/${s.id}/csv`; c.innerHTML = '<button>CSV</button>';
+    const d = document.createElement('button'); d.textContent = 'Delete'; d.className = 'danger';
+    d.onclick = async () => { if (confirm(`Delete session ${s.id}?`)) { try { await api(`/api/sessions/${s.id}`, {method: 'DELETE'}); if (selected === s.id) { view = null; $('view').style.display = $('viewHint').style.display = 'none'; } loadSessions(); } catch (e) { alert(e.message); } } };
+    tr.children[5].append(v, ' ', c, ' ', d); $('tbody').append(tr);
+  }
+}
+async function openSession(id) {
+  selected = id;
+  const r = await api(`/api/sessions/${id}/samples?max_points=4000`);
+  const d = {t: [], raw: [], lo: [], hi: [], filt: [], z: []};
+  for (const [t, raw, lo, hi, filt, z] of r.points) { d.t.push(t); d.raw.push(raw); d.lo.push(lo); d.hi.push(hi); d.filt.push(filt); d.z.push(z); }
+  view = {d, full: [d.t[0], d.t[d.t.length - 1]], range: null, zero: d.t[0]};
+  view.range = view.full.slice();
+  $('view').style.display = $('viewHint').style.display = 'block';
+  renderView(); loadSessions();
+}
+function renderView() { if (view) drawChart($('view'), view.d, {xRange: view.range, tZero: view.zero, band: true, threshold: null}); }
+(() => {
+  const cv = $('view'); let drag = null;
+  const tAt = e => { const m = cv._map, r = cv.getBoundingClientRect(); return m.x0 + (e.clientX - r.left - m.L) / (m.W - m.L - m.R) * (m.x1 - m.x0); };
+  cv.onmousedown = e => { drag = tAt(e); };
+  cv.onmouseup = e => { if (drag == null) return; const a = drag, b = tAt(e); drag = null; if (Math.abs(b - a) > (view.range[1] - view.range[0]) * 0.01) { view.range = [Math.min(a, b), Math.max(a, b)]; renderView(); } };
+  cv.ondblclick = () => { view.range = view.full.slice(); renderView(); };
+  window.addEventListener('resize', renderView);
+})();
+
+connectWS(); renderLive(); loadSessions();
+api('/api/status').then(applyStatus);
+</script>
+</body>
+</html>

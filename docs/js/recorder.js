@@ -1,7 +1,7 @@
 // Recording logic: live feed, session lifecycle (manual or following Moonraker print state), batching to a db.
 // db interface: startSession(name, source)->id, endSession(id), addSamples(id, rows),
 //               listSessions(), getSession(id), deleteSession(id), getSamples(id)->rows
-// Row format: [t_epoch_seconds, raw|null, filt|null, z|null]
+// Row format: [t_epoch_seconds, raw|null, filt|null, z|null, x|null, y|null]
 
 const ACTIVE = new Set(['printing']);
 const END = new Set(['complete', 'cancelled', 'error', 'standby']);
@@ -15,6 +15,8 @@ export class Recorder {
     this.printState = 'unknown';
     this.filename = null;
     this.z = null;
+    this.x = null;
+    this.y = null;
     this.moonrakerOk = null; // null = not configured
     this.connected = false;
     this.deviceError = null;
@@ -39,7 +41,7 @@ export class Recorder {
   // ---- device callbacks
   onSample(raw, filt) {
     const t = this.now();
-    const row = [t, raw, filt, this.z];
+    const row = [t, raw, filt, this.z, this.x, this.y];
     this._recent.push(t);
     if (this._recent.length > 500) this._recent.shift();
     if (this.session) {
@@ -66,10 +68,12 @@ export class Recorder {
   }
 
   // ---- moonraker callback
-  onPrintUpdate(state, filename, z, ok) {
+  onPrintUpdate(state, filename, z, ok, x = null, y = null) {
     this.moonrakerOk = ok;
     if (!ok) { this._changed(); return; }
     this.z = z;
+    this.x = x;
+    this.y = y;
     this.filename = filename || null;
     this.printState = state || 'unknown';
     if (ACTIVE.has(this.printState) && !this.session) {
@@ -88,7 +92,7 @@ export class Recorder {
 
   _start(name, source, auto) {
     const s = { id: null, name, auto, pending: [], chain: Promise.resolve() };
-    s.ready = Promise.resolve(this.db.startSession(name, source)).then((id) => { s.id = id; });
+    s.ready = Promise.resolve(this.db.startSession(name, source, source === 'moonraker' && this.filename ? { file: this.filename } : {})).then((id) => { s.id = id; });
     s.ready.catch((e) => this.log('db error: ' + e.message));
     this.session = s;
     this._lastFlush = this.now();

@@ -4,6 +4,7 @@ import { SerialSource, SimulatedSource, serialSupported } from './sources.js';
 import { MoonrakerPoller, mixedContentProblem } from './moonraker.js';
 import { downsample, toCsv, safeName } from './data.js';
 import { drawChart } from './chart.js';
+import { initTabs } from './ui_tabs.js';
 
 const $ = (id) => document.getElementById(id);
 const LIVE_KEEP_S = 330;
@@ -96,7 +97,7 @@ function toggleMoonraker(forceOn) {
   const url = $('mrUrl').value.trim();
   if (!/^https?:\/\//.test(url)) return alert('Enter a URL like http://192.168.1.50:7125');
   localStorage.setItem('mrUrl', url); localStorage.setItem('mrKey', $('mrKey').value); localStorage.setItem('mrEnabled', '1');
-  poller = new MoonrakerPoller(url, (s, f, z, ok) => rec.onPrintUpdate(s, f, z, ok), { apiKey: $('mrKey').value.trim() });
+  poller = new MoonrakerPoller(url, (s, f, z, ok, x, y) => rec.onPrintUpdate(s, f, z, ok, x, y), { apiKey: $('mrKey').value.trim() });
   poller.start(); moonrakerUi(true);
 }
 $('btnMr').onclick = () => toggleMoonraker(false);
@@ -173,6 +174,7 @@ function renderView() { if (view) drawChart($('view'), view.d, { xRange: view.ra
     $('noDb').style.display = 'block'; $('noDb').textContent = 'Could not open browser storage: ' + e.message; return;
   }
   rec = new Recorder(db);
+  initTabs({ db, live });
   rec.onsample = pushLive;
   rec.onchange = onChange;
   window.addEventListener('beforeunload', (e) => { if (rec.session || rec.connected) { e.preventDefault(); e.returnValue = ''; } });

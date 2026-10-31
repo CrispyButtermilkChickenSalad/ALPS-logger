@@ -77,15 +77,15 @@ test('downsample keeps spikes and caps points; csv shape', () => {
   assert.equal(downsample(rows, 1e6)[0][1], 10);
   assert.deepEqual(downsample([], 10), []);
   const csv = toCsv({ started: 1000 }, rows.slice(0, 2)).split('\n');
-  assert.equal(csv[0], 't_s,epoch,raw,filtered,z');
-  assert.equal(csv[1], '0.0000,1000.0000,10,10,');
+  assert.equal(csv[0], 't_s,epoch,raw,filtered,z,x,y');
+  assert.equal(csv[1], '0.0000,1000.0000,10,10,,,');
 });
 
 test('moonraker poller parses state and reports outages', async () => {
   const updates = [];
   const ok = async () => ({ ok: true, json: async () => ({ result: { status: { print_stats: { state: 'printing', filename: 'f.gcode' }, toolhead: { position: [1, 2, 3.25, 0] } } } }) });
   await new MoonrakerPoller('http://h:7125/', (...a) => updates.push(a), { fetchFn: ok }).pollOnce();
-  assert.deepEqual(updates[0], ['printing', 'f.gcode', 3.25, true]);
+  assert.deepEqual(updates[0], ['printing', 'f.gcode', 3.25, true, 1, 2]);
   await new MoonrakerPoller('http://h:7125', (...a) => updates.push(a), { fetchFn: async () => { throw new Error('x'); } }).pollOnce();
   assert.deepEqual(updates[1], [null, null, null, false]);
   await new MoonrakerPoller('http://h:7125', (...a) => updates.push(a), { fetchFn: async () => ({ ok: false, status: 403 }) }).pollOnce();

@@ -27,7 +27,18 @@
   .warn { display:none; background:#473a1d; color:#ffd479; padding:8px 12px; border-radius:6px; margin-bottom:10px; }
   .hint { color:var(--dim); font-size:12px; margin:6px 0 0; }
   a { color:var(--accent); }
+  nav.tabs { display:flex; gap:4px; padding:8px 16px 0; max-width:1200px; margin:auto; }
+  nav.tabs button { border-radius:6px 6px 0 0; background:transparent; border-color:transparent; color:var(--dim); }
+  nav.tabs button.on { background:var(--panel); color:var(--fg); border-color:#3a404a; }
+  .tab { display:grid; gap:16px; } .tab[hidden] { display:none; }
+  #v3d { height:520px; cursor:grab; touch-action:none; }
+  .bar { height:12px; border-radius:6px; flex:1; min-width:160px; }
+  input[type=number] { width:90px; } input[type=range] { padding:0; }
+  .note { border-left:3px solid #3a404a; padding:2px 10px; margin:8px 0; color:var(--dim); font-size:12px; }
+  .note b { color:var(--fg); }
+  .big { font-size:22px; font-variant-numeric:tabular-nums; }
 </style>
+
 </head>
 <body>
 <header>
@@ -40,9 +51,15 @@
   <span style="flex:1"></span>
   <a href="https://github.com/CrispyButtermilkChickenSalad/ALPS-logger" target="_blank" rel="noopener">GitHub</a>
 </header>
+<nav class="tabs">
+  <button data-tab="live" class="on">Live &amp; sessions</button>
+  <button data-tab="gcode">G-code preview</button>
+  <button data-tab="calib">Calibration</button>
+</nav>
 <main>
   <div id="noSerial" class="warn">This browser has no Web Serial API. Use Chrome or Edge on desktop (or the simulator below). Firefox and Safari are not supported.</div>
   <div id="noDb" class="warn"></div>
+  <div id="tab-live" class="tab">
   <section>
     <h2>Device &amp; live data</h2>
     <div class="row">
@@ -80,6 +97,83 @@
     <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
     <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
   </section>
+  </div>
+  <div id="tab-gcode" class="tab" hidden>
+    <section>
+      <h2>Sync a session to G-code</h2>
+      <div class="row">
+        <label>Session <select id="gSession" style="min-width:220px"></select></label>
+        <label>G-code file <input id="gFile" type="file" accept=".gcode,.gco,.g,.txt"></label>
+        <button id="gFetch" title="Download the file the session printed from Moonraker">Fetch from Moonraker</button>
+        <span id="gInfo" class="pill">no G-code loaded</span>
+      </div>
+      <div class="row">
+        <button id="gAuto" class="primary">Auto-fit timing</button>
+        <label>Offset s <input id="gOff" type="number" step="0.1" value="0"></label>
+        <label>Scale <input id="gScale" type="number" step="0.001" value="1"></label>
+        <button id="gManual">Apply manual</button>
+        <span id="gSync" class="pill">not synced</span>
+      </div>
+      <p class="hint">Auto-fit matches the toolhead positions logged from Moonraker to the G-code path (needs Moonraker enabled while recording). Without positions, set the offset (seconds from session start to G-code start) and a time scale by hand. Slicer time estimates are approximate; start/pause macros not in the file shift the offset.</p>
+    </section>
+    <section>
+      <h2>Preview</h2>
+      <div class="row">
+        <label>Colour by <select id="gMetric"><option value="mean">mean</option><option value="max">max</option><option value="min">min</option><option value="dev">peak deviation from tare</option></select></label>
+        <label>Signal <select id="gSignal"><option value="filt">filtered</option><option value="raw">raw</option></select></label>
+        <label>Min <input id="gLo" type="number" step="any" placeholder="auto"></label>
+        <label>Max <input id="gHi" type="number" step="any" placeholder="auto"></label>
+        <label><input id="gTravel" type="checkbox"> travel moves</label>
+        <button data-view="iso">Iso</button><button data-view="top">Top</button><button data-view="front">Front</button><button data-view="side">Side</button>
+      </div>
+      <div class="row">
+        <label style="flex:1">Layer <input id="gLayer" type="range" min="0" max="0" value="0" style="width:70%;vertical-align:middle"> <span id="gLayerTxt"></span></label>
+        <span id="gLoTxt" class="pill">–</span><div id="gBar" class="bar"></div><span id="gHiTxt" class="pill">–</span>
+      </div>
+      <canvas id="v3d"></canvas>
+      <p class="hint">Drag to rotate, Shift/right-drag to pan, wheel to zoom, double-click to reset. Grey = no ALPS data for that segment. Colours show values relative to the tare in the units set on the Calibration tab.</p>
+    </section>
+  </div>
+  <div id="tab-calib" class="tab" hidden>
+    <section>
+      <h2>Live reading</h2>
+      <div class="row">
+        <span class="big" id="cVal">–</span><span id="cUnit" class="pill">counts</span>
+        <span class="pill" id="cNoise">noise –</span>
+        <label>Average over <select id="cAvg"><option value="1">1 s</option><option value="3" selected>3 s</option><option value="10">10 s</option></select></label>
+        <span class="pill" id="cState">arbitrary counts (uncalibrated)</span>
+      </div>
+      <div class="row">
+        <button id="cTare">Capture tare (no load)</button>
+        <label>Known mass (g) <input id="cMass" type="number" min="0" step="any" value="500"></label>
+        <button id="cPoint">Capture point</button>
+        <label>Unit <select id="cUnitSel"><option>g</option><option>N</option><option>kg</option></select></label>
+        <label><input id="cInvert" type="checkbox"> invert sign</label>
+        <button id="cReset" class="danger">Reset to arbitrary counts</button>
+      </div>
+      <p class="hint">Connect the device (or simulator), unload the toolhead, capture the tare, then press with known masses (a scale under the nozzle works) and capture each point. At least two points (one can be 0 g) give counts/gram.</p>
+    </section>
+    <section>
+      <h2>Calibration points</h2>
+      <table><thead><tr><th>Mass (g)</th><th>Counts</th><th></th></tr></thead><tbody id="cPts"></tbody></table>
+      <div class="row" style="margin-top:10px"><span id="cFit" class="pill">need at least 2 points</span><button id="cApply" class="primary" disabled>Apply fit</button></div>
+    </section>
+    <section>
+      <h2>Recommended values &amp; estimate</h2>
+      <div id="cNotes"></div>
+      <div class="row">
+        <label>Sensor <select id="eSensor"><option value="">custom</option><option value="1,1">1 kg cell, 1 mV/V</option><option value="5,1">5 kg cell, 1 mV/V</option><option value="1,2">1 kg cell, 2 mV/V</option></select></label>
+        <label>Capacity kg <input id="eCap" type="number" step="any" value="1"></label>
+        <label>mV/V <input id="eSens" type="number" step="any" value="1"></label>
+        <label>Excitation V <input id="eExc" type="number" step="any" value="3.3"></label>
+        <label>PGA gain <select id="eGain"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option><option>32</option><option>64</option><option selected>128</option></select></label>
+        <button id="eCalc">Estimate</button>
+        <span id="eOut" class="pill">–</span>
+        <button id="eUse" disabled>Use estimate</button>
+      </div>
+      <p class="hint">The estimate assumes a standard Wheatstone-bridge load cell read by the ADS131M02 (a 1 count LSB is 143 nV / gain). Mellow does not publish the ALPS sensor or gain, so treat it as an order of magnitude only; a known-mass calibration always overrides it. Default is raw counts.</p>
+    </section>
+  </div>
 </main>
 <script type="module" src="js/ui.js"></script>
 </body>

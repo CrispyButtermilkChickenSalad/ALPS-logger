@@ -28,6 +28,12 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
 
 For unattended, always-on logging next to the printer, use the Python service below.
 
+## G-code preview & calibration (web app only)
+
+- **G-code preview tab**: pick a recorded session and a G-code file (upload, or fetch from Moonraker). The toolpath is shown in 3D, each segment coloured by the ALPS counts logged while it was printed (mean / max / min / peak deviation, filtered or raw; layer slider; auto colour range).
+- **Sync**: *Auto-fit* matches the toolhead X/Y/Z positions logged from Moonraker (4 Hz) to the G-code path, so it needs Moonraker enabled while recording and handles start macros, pauses and slicer-estimate drift. Without positions use manual offset and scale. Timing is accurate to roughly a second; fast, short segments are blurred.
+- **Calibration tab**: capture a tare and known-mass points to get counts/gram (least-squares), choose g/N/kg, or compute a theoretical estimate for a bridge load cell on the ADS131M02. Default is raw counts, since Mellow does not publish the ALPS sensor, gain or sensitivity. Guidance follows Klipper's [load cell docs](https://www.klipper3d.org/Load_Cell.html) and the TI datasheet. Settings are stored in the browser.
+
 ## Python service (headless option)
 
 ## Protocol summary

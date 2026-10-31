@@ -22,9 +22,9 @@ export function downsample(rows, maxPoints) {
 }
 
 export function toCsv(session, rows) {
-  const lines = ['t_s,epoch,raw,filtered,z'];
-  for (const [t, raw, filt, z] of rows) {
-    lines.push([(t - session.started).toFixed(4), t.toFixed(4), raw ?? '', filt ?? '', z ?? ''].join(','));
+  const lines = ['t_s,epoch,raw,filtered,z,x,y'];
+  for (const [t, raw, filt, z, x, y] of rows) {
+    lines.push([(t - session.started).toFixed(4), t.toFixed(4), raw ?? '', filt ?? '', z ?? '', x ?? '', y ?? ''].join(','));
   }
   return lines.join('\n') + '\n';
 }

@@ -30,9 +30,9 @@ export class IdbDb {
     }
   }
 
-  async startSession(name, source) {
+  async startSession(name, source, meta = {}) {
     const tx = this.db.transaction('sessions', 'readwrite');
-    const id = await req(tx.objectStore('sessions').add({ name, source, started: Date.now() / 1000, ended: null, n: 0 }));
+    const id = await req(tx.objectStore('sessions').add({ name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta }));
     await done(tx);
     return id;
   }
@@ -79,14 +79,23 @@ export class IdbDb {
     chunks.sort((a, b) => a.id - b.id);
     return chunks.flatMap((c) => c.rows);
   }
+
+  // Streams chunk by chunk so hours-long sessions do not need to be held as row arrays.
+  async scanSamples(id, cb) {
+    const keys = (await req(this.db.transaction('chunks').objectStore('chunks').index('sid').getAllKeys(id))).sort((a, b) => a - b);
+    for (const k of keys) {
+      const c = await req(this.db.transaction('chunks').objectStore('chunks').get(k));
+      if (c) cb(c.rows);
+    }
+  }
 }
 
 // Same interface, in memory (tests).
 export class MemoryDb {
   constructor() { this.sessions = new Map(); this.rows = new Map(); this.next = 1; }
-  async startSession(name, source) {
+  async startSession(name, source, meta = {}) {
     const id = this.next++;
-    this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0 });
+    this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta });
     this.rows.set(id, []);
     return id;
   }
@@ -96,4 +105,5 @@ export class MemoryDb {
   async getSession(id) { return this.sessions.get(id); }
   async deleteSession(id) { this.sessions.delete(id); this.rows.delete(id); }
   async getSamples(id) { return this.rows.get(id) || []; }
+  async scanSamples(id, cb) { cb(this.rows.get(id) || []); }
 }

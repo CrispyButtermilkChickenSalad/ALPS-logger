@@ -2,7 +2,8 @@ import { Recorder } from './recorder.js';
 import { IdbDb } from './db.js';
 import { SerialSource, SimulatedSource, serialSupported } from './sources.js';
 import { MoonrakerPoller, mixedContentProblem } from './moonraker.js';
-import { downsample, toCsv, safeName } from './data.js';
+import { downsample, toCsv, exportMeta, safeName } from './data.js';
+import { loadCalib } from './calib.js';
 import { drawChart } from './chart.js';
 import { initTabs } from './ui_tabs.js';
 
@@ -139,10 +140,15 @@ async function loadSessions() {
 }
 async function downloadCsv(id) {
   const s = await db.getSession(id);
-  const blob = new Blob([toCsv(s, await db.getSamples(id))], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = `alps_${id}_${safeName(s.name)}.csv`; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  const rows = await db.getSamples(id), calib = loadCalib(localStorage), base = `alps_${id}_${safeName(s.name)}`;
+  const save = (text, type, name) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  save(toCsv(s, rows, calib), 'text/csv', base + '.csv');
+  // Sidecar documents units and the calibration used, for research reproducibility.
+  setTimeout(() => save(JSON.stringify(exportMeta(s, rows, calib), null, 2), 'application/json', base + '.meta.json'), 300);
 }
 async function openSession(id) {
   selected = id;

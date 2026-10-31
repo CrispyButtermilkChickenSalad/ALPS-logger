@@ -79,6 +79,10 @@ test('downsample keeps spikes and caps points; csv shape', () => {
   const csv = toCsv({ started: 1000 }, rows.slice(0, 2)).split('\n');
   assert.equal(csv[0], 't_s,epoch,raw,filtered,z,x,y');
   assert.equal(csv[1], '0.0000,1000.0000,10,10,,,');
+  const cal = { tare: 10, countsPerGram: 2, unit: 'g', invert: false };
+  const c2 = toCsv({ started: 1000 }, [[1000, 30, 30, null, null, null]], cal).split('\n');
+  assert.equal(c2[0], 't_s,epoch,raw,filtered,z,x,y,force_raw_g,force_filtered_g');
+  assert.equal(c2[1], '0.0000,1000.0000,30,30,,,,10.00000,10.00000');
 });
 
 test('moonraker poller parses state and reports outages', async () => {

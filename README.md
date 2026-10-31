@@ -57,7 +57,7 @@ The logger never sends `flyboot` (bootloader).
 - Per-print sessions: starts on `print_stats.state == printing`, stops on complete / cancelled / error / standby
   (paused keeps recording; Moonraker outages don't end a session)
 - Manual start/stop recording for bench work
-- Recorded prints list, zoomable chart (min/max preserved when decimating), CSV download, delete
+- Recorded prints list, zoomable chart (min/max preserved when decimating), CSV download, delete. CSV `raw`/`filtered` are always ADC counts; if a calibration is applied, `force_raw_<unit>`/`force_filtered_<unit>` columns are appended and a `.meta.json` sidecar records the unit, counts/gram and tare
 - Read/set the trigger threshold from the UI
 - Auto-reconnect if the USB device is unplugged
 - Simulator mode (`--simulate`) to try the UI with no hardware

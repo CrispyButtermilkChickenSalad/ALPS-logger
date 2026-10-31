@@ -55,6 +55,15 @@ export class IdbDb {
     await done(tx);
   }
 
+  async importSession(session, rows) {
+    const { id, ...rest } = session;
+    const tx = this.db.transaction(['sessions', 'chunks'], 'readwrite');
+    const sid = await req(tx.objectStore('sessions').add({ ...rest, n: rows.length }));
+    for (let i = 0; i < rows.length; i += 5000) tx.objectStore('chunks').add({ sid, rows: rows.slice(i, i + 5000) });
+    await done(tx);
+    return sid;
+  }
+
   async listSessions() {
     const tx = this.db.transaction('sessions');
     const all = await req(tx.objectStore('sessions').getAll());
@@ -98,6 +107,12 @@ export class MemoryDb {
     this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta });
     this.rows.set(id, []);
     return id;
+  }
+  async importSession(session, rows) {
+    const { id, ...rest } = session;
+    const nid = this.next++;
+    this.sessions.set(nid, { ...rest, id: nid, n: rows.length }); this.rows.set(nid, rows.slice());
+    return nid;
   }
   async endSession(id) { this.sessions.get(id).ended = Date.now() / 1000; }
   async addSamples(id, rows) { this.rows.get(id).push(...rows); this.sessions.get(id).n += rows.length; }

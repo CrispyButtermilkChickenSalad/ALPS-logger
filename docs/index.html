@@ -98,6 +98,22 @@
     <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
     <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
   </section>
+  <section>
+    <h2>Keep your data safe</h2>
+    <div class="row">
+      <span id="durState" class="pill">checking storage…</span>
+      <button id="btnFolder">Auto-save to folder…</button>
+      <span id="folderState" class="pill">no folder</span>
+      <button id="btnFolderGrant" hidden>Re-enable folder access</button>
+    </div>
+    <div class="row">
+      <button id="btnBackup">Backup all sessions</button>
+      <button id="btnRestore">Restore from backup…</button>
+      <input id="fileRestore" type="file" accept=".json,application/json" hidden>
+      <span id="backupState" class="pill">–</span>
+    </div>
+    <p class="hint">Sessions are saved to this browser as they record and survive closing the tab (recording itself stops when the page closes). The browser can still delete them if site data is cleared or storage runs low, so ask it to keep them (shown above), mirror recordings to a folder you choose (Chrome/Edge: counts-only CSV, appended live), and make a backup file now and then. For unattended logging use the Python service.</p>
+  </section>
   </div>
   <div id="tab-gcode" class="tab" hidden>
     <section>

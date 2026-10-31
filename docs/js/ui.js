@@ -4,6 +4,7 @@ import { SerialSource, SimulatedSource, serialSupported } from './sources.js';
 import { MoonrakerPoller, mixedContentProblem } from './moonraker.js';
 import { downsample, toCsv, exportMeta, safeName } from './data.js';
 import { loadCalib } from './calib.js';
+import { MirrorDb, requestPersistence, loadFolderHandle, saveFolderHandle, exportBackup, importBackup } from './persist.js';
 import { drawChart } from './chart.js';
 import { initTabs } from './ui_tabs.js';
 
@@ -171,6 +172,46 @@ function renderView() { if (view) drawChart($('view'), view.d, { xRange: view.ra
   window.addEventListener('resize', renderView);
 })();
 
+// ---- durability --------------------------------------------------------------------------------
+async function initDurability() {
+  const p = await requestPersistence();
+  $('durState').textContent = !p.supported ? 'persistent storage: not supported' : p.persisted ? 'persistent storage: granted' : 'persistent storage: not granted (browser may evict data)';
+  $('durState').className = 'pill' + (p.persisted ? '' : ' bad');
+
+  const setFolder = (h) => { db.setFolder(h); $('folderState').textContent = h ? 'saving to folder: ' + h.name : 'no folder'; $('folderState').className = 'pill'; $('btnFolderGrant').hidden = true; };
+  if (!window.showDirectoryPicker) { $('btnFolder').disabled = true; $('folderState').textContent = 'folder auto-save needs Chrome/Edge'; }
+  else {
+    try {
+      const h = await loadFolderHandle();
+      if (h) {
+        if ((await h.queryPermission({ mode: 'readwrite' })) === 'granted') setFolder(h);
+        else { $('folderState').textContent = `folder ${h.name}: permission needed`; $('btnFolderGrant').hidden = false; $('btnFolderGrant').onclick = async () => { if ((await h.requestPermission({ mode: 'readwrite' })) === 'granted') setFolder(h); }; }
+      }
+    } catch { /* ignore */ }
+    $('btnFolder').onclick = async () => {
+      try { const h = await showDirectoryPicker({ mode: 'readwrite', id: 'alps-logs' }); await saveFolderHandle(h); setFolder(h); }
+      catch (e) { if (e.name !== 'AbortError') alert(e.message); }
+    };
+  }
+
+  $('btnBackup').onclick = async () => {
+    try {
+      const blob = await exportBackup(db);
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = `alps_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      $('backupState').textContent = 'backup downloaded';
+    } catch (e) { $('backupState').textContent = e.message; }
+  };
+  $('btnRestore').onclick = () => $('fileRestore').click();
+  $('fileRestore').onchange = async () => {
+    const f = $('fileRestore').files[0]; $('fileRestore').value = '';
+    if (!f) return;
+    try { const n = await importBackup(db, await f.text()); $('backupState').textContent = `restored ${n} session(s) (added as new sessions)`; loadSessions(); }
+    catch (e) { $('backupState').textContent = e.message; $('backupState').className = 'pill bad'; }
+  };
+}
+
 // ---- boot ------------------------------------------------------------------------------------
 (async () => {
   if (!serialSupported()) $('noSerial').style.display = 'block';
@@ -179,8 +220,11 @@ function renderView() { if (view) drawChart($('view'), view.d, { xRange: view.ra
   } catch (e) {
     $('noDb').style.display = 'block'; $('noDb').textContent = 'Could not open browser storage: ' + e.message; return;
   }
+  const idb = db;
+  db = new MirrorDb(idb, { onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; } });
   rec = new Recorder(db);
   initTabs({ db, live });
+  initDurability();
   rec.onsample = pushLive;
   rec.onchange = onChange;
   window.addEventListener('beforeunload', (e) => { if (rec.session || rec.connected) { e.preventDefault(); e.returnValue = ''; } });

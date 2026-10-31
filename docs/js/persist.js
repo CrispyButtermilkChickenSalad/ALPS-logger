@@ -27,14 +27,88 @@ export async function loadFolderHandle() {
   return new Promise((res) => { const r = d.transaction('kv').objectStore('kv').get('dir'); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); });
 }
 
+// ---- sessions saved as CSV in the auto-save folder ----------------------------------------------
+export const isFolderId = (v) => typeof v === 'string' && v.startsWith('f:');
+export const parseSessionId = (v) => (isFolderId(v) ? v : +v);
+
+// Parses an ALPS CSV (header-driven, extra columns such as force_* are ignored) into a session + rows
+// shaped like the browser database: [epoch, raw, filtered, z, x, y].
+export function parseCsv(text, name = 'file.csv') {
+  const lines = text.split(/\r?\n/);
+  const head = (lines[0] || '').split(',').map((s) => s.trim());
+  const col = (k) => head.indexOf(k);
+  const ie = col('epoch'), it = col('t_s'), ir = col('raw'), ifl = col('filtered'), iz = col('z'), ix = col('x'), iy = col('y');
+  if (ie < 0 || ir < 0) throw new Error('Not an ALPS CSV: ' + name);
+  const num = (c, i) => { if (i < 0 || c[i] === undefined || c[i] === '') return null; const v = +c[i]; return Number.isFinite(v) ? v : null; };
+  const rows = []; let started = null;
+  for (let k = 1; k < lines.length; k++) {
+    if (!lines[k]) continue;
+    const c = lines[k].split(',');
+    if (c.length <= Math.max(ie, ir, ifl, iz, ix, iy)) continue; // truncated last line
+    const e = num(c, ie); if (e == null) continue;
+    if (started === null) started = e - (num(c, it) || 0);
+    rows.push([e, num(c, ir), num(c, ifl), num(c, iz), num(c, ix), num(c, iy)]);
+  }
+  started = started ?? 0;
+  return { session: { id: 'f:' + name, name: name.replace(/\.csv$/i, ''), source: 'folder', started, ended: rows.length ? rows[rows.length - 1][0] : started, n: rows.length }, rows };
+}
+
+// Fills a <select> with browser sessions plus (if a folder is set) the CSV files saved in it.
+export async function fillSessionSelect(sel, db) {
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">– choose –</option>';
+  const group = (label) => { const g = document.createElement('optgroup'); g.label = label; sel.append(g); return g; };
+  const add = (g, value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; g.append(o); };
+  const rows = await db.listSessions();
+  if (rows.length) { const g = group('Recorded in this browser'); for (const s of rows) add(g, s.id, `#${s.id} ${s.name} (${s.n} samples)${s.file ? ' – ' + s.file : ''}`); }
+  if (db.listFolder && db.dir) {
+    try {
+      const f = await db.listFolder();
+      if (f.length) { const g = group('Saved in folder: ' + db.dir.name); for (const s of f) add(g, s.id, `${s.file} (${Math.max(1, Math.round(s.size / 1024))} KB)`); }
+    } catch { /* folder unreadable: browser sessions still work */ }
+  }
+  if (keep) sel.value = keep;
+}
+
 // Wraps a db. While `dir` is set, every session is also appended to a CSV file in that folder as it records.
 // The CSV holds counts only (same columns as the manual export); failures never interrupt recording.
+// Ids like "f:name.csv" address CSV files in the folder (read-only) through the same db interface.
 export class MirrorDb {
   constructor(inner, { onError = () => {} } = {}) {
-    this.inner = inner; this.dir = null; this.onError = onError; this.files = new Map(); this.chains = new Map(); this.lastWrite = null;
-    for (const m of ['listSessions', 'getSession', 'deleteSession', 'getSamples', 'scanSamples', 'importSession']) this[m] = (...a) => inner[m](...a);
+    this.inner = inner; this.dir = null; this.onError = onError; this.files = new Map(); this.chains = new Map(); this.lastWrite = null; this.cache = new Map();
+    for (const m of ['listSessions', 'deleteSession', 'importSession']) this[m] = (...a) => inner[m](...a);
   }
-  setFolder(dir) { this.dir = dir || null; this.files.clear(); }
+  setFolder(dir) { this.dir = dir || null; this.files.clear(); this.cache.clear(); }
+
+  async listFolder() {
+    if (!this.dir) return [];
+    const out = [];
+    for await (const [name, h] of this.dir.entries()) {
+      if (h.kind !== 'file' || !/\.csv$/i.test(name)) continue;
+      const f = await h.getFile();
+      out.push({ id: 'f:' + name, name: name.replace(/\.csv$/i, ''), file: name, size: f.size, modified: f.lastModified / 1000 });
+    }
+    return out.sort((a, b) => b.modified - a.modified);
+  }
+  async _folderLoad(id) {
+    if (!this.dir) throw new Error('No folder selected');
+    const name = id.slice(2);
+    const f = await (await this.dir.getFileHandle(name)).getFile();
+    const c = this.cache.get(id);
+    if (c && c.mod === f.lastModified && c.size === f.size) return c.v;
+    const v = parseCsv(await f.text(), name);
+    this.cache.delete(id); this.cache.set(id, { mod: f.lastModified, size: f.size, v });
+    if (this.cache.size > 2) this.cache.delete(this.cache.keys().next().value);
+    return v;
+  }
+  async getSession(id) { return isFolderId(id) ? (await this._folderLoad(id)).session : this.inner.getSession(id); }
+  async getSamples(id) { return isFolderId(id) ? (await this._folderLoad(id)).rows : this.inner.getSamples(id); }
+  async scanSamples(id, cb) { if (isFolderId(id)) cb((await this._folderLoad(id)).rows); else await this.inner.scanSamples(id, cb); }
+  // Copies a folder CSV into the browser database; returns the new session id.
+  async importFromFolder(id) {
+    const { session, rows } = await this._folderLoad(id);
+    return this.inner.importSession({ ...session, id: undefined, source: 'folder import' }, rows);
+  }
   _queue(id, fn) {
     const p = (this.chains.get(id) || Promise.resolve()).then(fn).catch((e) => { this.onError(e); });
     this.chains.set(id, p); return p;

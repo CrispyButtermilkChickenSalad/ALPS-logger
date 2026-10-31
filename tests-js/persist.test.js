@@ -1,21 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryDb } from '../docs/js/db.js';
-import { MirrorDb, exportBackup, importBackup, requestPersistence } from '../docs/js/persist.js';
+import { MirrorDb, exportBackup, importBackup, requestPersistence, parseCsv, parseSessionId } from '../docs/js/persist.js';
 
 function fakeDir() {
   const files = new Map();
-  return {
-    files,
-    async getFileHandle(name) {
-      if (!files.has(name)) files.set(name, '');
-      return { async createWritable() {
-        let buf = files.get(name), pos = 0;
-        return { async seek(p) { pos = p; }, async write(t) { buf = buf.slice(0, pos) + t; pos += t.length; }, async close() { files.set(name, buf); } };
-      } };
+  const handle = (name) => ({
+    kind: 'file',
+    async getFile() { const s = files.get(name); return { size: s.length, lastModified: 5000, text: async () => s }; },
+    async createWritable() {
+      let buf = files.get(name), pos = 0;
+      return { async seek(p) { pos = p; }, async write(t) { buf = buf.slice(0, pos) + t; pos += t.length; }, async close() { files.set(name, buf); } };
     },
+  });
+  return {
+    files, name: 'fake',
+    async getFileHandle(name) { if (!files.has(name)) files.set(name, ''); return handle(name); },
+    async *entries() { for (const n of files.keys()) yield [n, handle(n)]; },
   };
 }
+
+test('folder CSVs are listed, parsed and importable through the db interface', async () => {
+  const dir = fakeDir();
+  dir.files.set('a.csv', 't_s,epoch,raw,filtered,z,x,y,force_raw_g\n0.0000,1000.0000,5,6,,,,0.1\n1.0000,1001.0000,7,8,0.2,10,20,0.2\n');
+  dir.files.set('notes.txt', 'x');
+  const m = new MirrorDb(new MemoryDb()); m.setFolder(dir);
+  const list = await m.listFolder();
+  assert.deepEqual(list.map((f) => f.id), ['f:a.csv']);
+  const s = await m.getSession('f:a.csv');
+  assert.equal(s.started, 1000); assert.equal(s.n, 2);
+  assert.deepEqual((await m.getSamples('f:a.csv'))[1], [1001, 7, 8, 0.2, 10, 20]);
+  const got = []; await m.scanSamples('f:a.csv', (r) => got.push(...r)); assert.equal(got.length, 2);
+  const nid = await m.importFromFolder('f:a.csv');
+  assert.equal((await m.getSession(nid)).n, 2); assert.equal((await m.getSamples(nid)).length, 2);
+  assert.throws(() => parseCsv('a,b\n1,2', 'bad.csv'), /Not an ALPS CSV/);
+  assert.equal(parseSessionId('f:a.csv'), 'f:a.csv'); assert.equal(parseSessionId('7'), 7);
+});
 
 test('mirror appends a CSV file live and matches inner storage', async () => {
   const inner = new MemoryDb(), dir = fakeDir(), errs = [];

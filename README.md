@@ -23,6 +23,9 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
   Moonraker must list the page origin in `[authorization] cors_domains`. An https page cannot call a plain `http://` Moonraker
   (mixed content) unless you run the page from `http://localhost` (`python -m http.server --directory docs`),
   serve Moonraker over https, or allow insecure content for the site.
+- **Most recent session** and **Saved sessions in folder** sections: the folder list shows CSVs auto-saved to your chosen folder
+  (View / Import into browser / open in G-code tab). The G-code and PA tabs can pick sessions from the browser or the folder.
+  Folder CSVs hold counts only, and the Moonraker file name isn't stored in them.
 - Try it without hardware using the **Simulator** button.
 - Tests: `npm test`.
 

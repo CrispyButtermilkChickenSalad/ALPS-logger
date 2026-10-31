@@ -93,10 +93,27 @@
     <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
+    <h2>Most recent session</h2>
+    <div id="recentEmpty" class="hint">No recorded sessions yet.</div>
+    <div id="recentBody" hidden>
+      <div class="row">
+        <b id="rName"></b><span id="rMeta" class="pill"></span><span id="rStats" class="pill"></span>
+        <button id="rView">Zoom view</button><button id="rCsv">CSV</button><button id="rGcode">Use in G-code tab</button>
+      </div>
+      <canvas id="recentView" style="height:200px"></canvas>
+    </div>
+  </section>
+  <section>
     <h2>Recorded sessions</h2>
     <canvas id="view" style="display:none"></canvas>
     <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
     <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
+  </section>
+  <section>
+    <h2>Saved sessions in folder</h2>
+    <div class="row"><span id="fList" class="pill">no folder selected</span><button id="fRefresh">Refresh</button></div>
+    <table><thead><tr><th>File</th><th>Modified</th><th>Size</th><th></th></tr></thead><tbody id="ftbody"></tbody></table>
+    <p class="hint">CSV files in the auto-save folder (below). <b>View</b> charts one above, <b>Import</b> copies it into this browser so it is listed with the others. The G-code and PA tabs can also pick these files directly. Files written by the CSV button work too (extra force columns are ignored; only counts are read).</p>
   </section>
   <section>
     <h2>Keep your data safe</h2>

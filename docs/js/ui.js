@@ -116,7 +116,7 @@ $('wake').onchange = (e) => setWake(e.target.checked);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('wake').checked) setWake(true); });
 
 // ---- recorded sessions ---------------------------------------------------------------------
-let view = null, selected = null;
+let view = null, selected = null, tabsApi = null;
 const fmt = (ts) => new Date(ts * 1000).toLocaleString();
 const dur = (s) => { const d = (s.ended || Date.now() / 1000) - s.started; return d >= 3600 ? (d / 3600).toFixed(2) + ' h' : d >= 60 ? (d / 60).toFixed(1) + ' min' : d.toFixed(0) + ' s'; };
 async function loadSessions() {
@@ -138,7 +138,52 @@ async function loadSessions() {
     };
     tr.children[5].append(v, ' ', c, ' ', d); $('tbody').append(tr);
   }
+  renderRecent(rows).catch(() => {});
+  loadFolder().catch(() => {});
 }
+
+const chartData = (rows, n) => {
+  const d = { t: [], raw: [], lo: [], hi: [], filt: [], z: [] };
+  for (const [t, raw, lo, hi, filt, z] of downsample(rows, n)) { d.t.push(t); d.raw.push(raw); d.lo.push(lo); d.hi.push(hi); d.filt.push(filt); d.z.push(z); }
+  return d;
+};
+
+async function renderRecent(rows) {
+  const s = rows[0];
+  $('recentEmpty').hidden = !!s; $('recentBody').hidden = !s;
+  if (!s) return;
+  const samples = await db.getSamples(s.id);
+  $('rName').textContent = `#${s.id} ${s.name}`;
+  $('rMeta').textContent = `${fmt(s.started)} · ${dur(s)}${s.ended ? '' : ' (recording)'} · ${samples.length} samples`;
+  let lo = Infinity, hi = -Infinity, sum = 0, k = 0;
+  for (const r of samples) { const v = r[1]; if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; sum += v; k++; }
+  $('rStats').textContent = k ? `raw min ${lo} · mean ${Math.round(sum / k)} · max ${hi} · span ${hi - lo}` : 'no data yet';
+  $('rView').onclick = async () => { await openSession(s.id); $('view').scrollIntoView({ behavior: 'smooth' }); };
+  $('rCsv').onclick = () => downloadCsv(s.id);
+  $('rGcode').onclick = () => tabsApi.openInGcode(s.id);
+  const d = chartData(samples, 2000);
+  if (d.t.length > 1) drawChart($('recentView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: d.t[0], band: true, threshold: null });
+}
+
+async function loadFolder() {
+  const body = $('ftbody'); body.innerHTML = '';
+  if (!db.dir) { $('fList').textContent = 'no folder selected (use Auto-save to folder below)'; return; }
+  let list;
+  try { list = await db.listFolder(); } catch (e) { $('fList').textContent = 'cannot read folder: ' + e.message; return; }
+  $('fList').textContent = `${list.length} CSV file(s) in ${db.dir.name}`;
+  for (const f of list) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td></td><td></td><td></td><td></td>';
+    tr.children[0].textContent = f.file; tr.children[1].textContent = fmt(f.modified); tr.children[2].textContent = Math.max(1, Math.round(f.size / 1024)) + ' KB';
+    const v = document.createElement('button'); v.textContent = 'View';
+    v.onclick = async () => { try { await openSession(f.id); $('view').scrollIntoView({ behavior: 'smooth' }); } catch (e) { alert(e.message); } };
+    const im = document.createElement('button'); im.textContent = 'Import';
+    im.onclick = async () => { try { await db.importFromFolder(f.id); im.textContent = 'Imported'; im.disabled = true; loadSessions(); } catch (e) { alert(e.message); } };
+    const g = document.createElement('button'); g.textContent = 'G-code tab'; g.onclick = () => tabsApi.openInGcode(f.id);
+    tr.children[3].append(v, ' ', im, ' ', g); body.append(tr);
+  }
+}
+$('fRefresh').onclick = () => loadFolder();
 async function downloadCsv(id) {
   const s = await db.getSession(id);
   const rows = await db.getSamples(id), calib = loadCalib(localStorage), base = `alps_${id}_${safeName(s.name)}`;
@@ -153,9 +198,7 @@ async function downloadCsv(id) {
 }
 async function openSession(id) {
   selected = id;
-  const pts = downsample(await db.getSamples(id), 4000);
-  const d = { t: [], raw: [], lo: [], hi: [], filt: [], z: [] };
-  for (const [t, raw, lo, hi, filt, z] of pts) { d.t.push(t); d.raw.push(raw); d.lo.push(lo); d.hi.push(hi); d.filt.push(filt); d.z.push(z); }
+  const d = chartData(await db.getSamples(id), 4000);
   if (!d.t.length) { view = null; $('view').style.display = $('viewHint').style.display = 'none'; return loadSessions(); }
   view = { d, full: [d.t[0], d.t[d.t.length - 1]], range: null, zero: d.t[0] };
   view.range = view.full.slice();
@@ -178,7 +221,7 @@ async function initDurability() {
   $('durState').textContent = !p.supported ? 'persistent storage: not supported' : p.persisted ? 'persistent storage: granted' : 'persistent storage: not granted (browser may evict data)';
   $('durState').className = 'pill' + (p.persisted ? '' : ' bad');
 
-  const setFolder = (h) => { db.setFolder(h); $('folderState').textContent = h ? 'saving to folder: ' + h.name : 'no folder'; $('folderState').className = 'pill'; $('btnFolderGrant').hidden = true; };
+  const setFolder = (h) => { db.setFolder(h); $('folderState').textContent = h ? 'saving to folder: ' + h.name : 'no folder'; $('folderState').className = 'pill'; $('btnFolderGrant').hidden = true; loadFolder().catch(() => {}); };
   if (!window.showDirectoryPicker) { $('btnFolder').disabled = true; $('folderState').textContent = 'folder auto-save needs Chrome/Edge'; }
   else {
     try {
@@ -223,7 +266,7 @@ async function initDurability() {
   const idb = db;
   db = new MirrorDb(idb, { onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; } });
   rec = new Recorder(db);
-  initTabs({ db, live });
+  tabsApi = initTabs({ db, live });
   initDurability();
   rec.onsample = pushLive;
   rec.onchange = onChange;
@@ -233,5 +276,6 @@ async function initDurability() {
   updateMixedWarning();
   if (localStorage.getItem('mrEnabled') === '1' && $('mrUrl').value) toggleMoonraker(true);
   setInterval(renderStatus, 1000);
+  setInterval(() => { if (rec.session) loadSessions(); }, 10000);
   renderStatus(); renderLive(); loadSessions();
 })();

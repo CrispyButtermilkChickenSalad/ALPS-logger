@@ -1,6 +1,7 @@
 import { DEFAULT_PA, kValues, genGcode, analyzePa } from './pa.js';
 import { loadColumns } from './sync.js';
 import { colorAt } from './viewer3d.js';
+import { fillSessionSelect, parseSessionId } from './persist.js';
 
 const $ = (id) => document.getElementById(id);
 const f = (v, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : '–');
@@ -70,17 +71,12 @@ export function initPa({ db }) {
     a.download = `pa_${readParams().mode}_test.gcode`; a.click(); URL.revokeObjectURL(a.href);
   };
 
-  async function refresh() {
-    const rows = await db.listSessions(), sel = $('aSession'), keep = sel.value;
-    sel.innerHTML = '<option value="">– choose –</option>';
-    for (const s of rows) { const o = document.createElement('option'); o.value = s.id; o.textContent = `#${s.id} ${s.name} (${s.n} samples)`; sel.append(o); }
-    if (keep) sel.value = keep;
-  }
+  const refresh = () => fillSessionSelect($('aSession'), db);
 
   $('aRun').onclick = async () => {
     const out = $('aStatus');
     try {
-      const id = +$('aSession').value;
+      const id = parseSessionId($('aSession').value);
       if (!id) throw new Error('Choose a recorded session');
       const q = readParams();
       const cols = await loadColumns(db, id, await db.getSession(id));

@@ -2,6 +2,7 @@ import { parseGcode } from './gcode.js';
 import { TimeMap, autoSync, aggregate, extractPoses, loadColumns, percentile, medianOf } from './sync.js';
 import { Viewer, toBins, gradientCss } from './viewer3d.js';
 import { initPa } from './ui_pa.js';
+import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB } from './calib.js';
 
@@ -23,26 +24,18 @@ export function initTabs({ db, live }) {
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
 
   // ---- G-code tab ---------------------------------------------------------------------
-  async function refreshSessions() {
-    const rows = await db.listSessions();
-    const sel = $('gSession'), keep = sel.value;
-    sel.innerHTML = '<option value="">– choose –</option>';
-    for (const s of rows) {
-      const o = document.createElement('option');
-      o.value = s.id; o.textContent = `#${s.id} ${s.name} (${s.n} samples)${s.file ? ' – ' + s.file : ''}`;
-      sel.append(o);
-    }
-    if (keep) sel.value = keep;
-  }
+  async function refreshSessions() { await fillSessionSelect($('gSession'), db); }
   const setSync = (txt, cls = '') => { $('gSync').textContent = txt; $('gSync').className = 'pill ' + cls; };
 
   $('gSession').onchange = async () => {
-    const id = +$('gSession').value;
+    const id = parseSessionId($('gSession').value);
     S.id = id || null; S.cols = S.poses = S.map = S.agg = null;
     if (!id) return recolor();
-    S.session = await db.getSession(id);
     setSync('loading session…');
-    S.cols = await loadColumns(db, id, S.session);
+    try {
+      S.session = await db.getSession(id);
+      S.cols = await loadColumns(db, id, S.session);
+    } catch (e) { setSync(e.message, 'bad'); return recolor(); }
     S.poses = extractPoses(S.cols);
     setSync(S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset', S.poses.n ? '' : 'bad');
     if (S.g) await runAuto(true); else recolor();
@@ -202,5 +195,11 @@ export function initTabs({ db, live }) {
     $('cNoise').textContent = `noise σ ${r.sd.toFixed(1)} counts`;
   }, 250);
   renderCalib();
-  return { refreshSessions };
+  return {
+    refreshSessions,
+    async openInGcode(id) {
+      show('gcode'); await refreshSessions();
+      $('gSession').value = String(id); $('gSession').dispatchEvent(new Event('change'));
+    },
+  };
 }

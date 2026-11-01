@@ -191,9 +191,62 @@ async function renderRecent(rows) {
   $('rView').onclick = async () => { goTab('sessions'); await openSession(s.id); $('view').scrollIntoView({ behavior: 'smooth' }); };
   $('rCsv').onclick = () => downloadCsv(s.id);
   $('rGcode').onclick = () => tabsApi.openInGcode(s.id);
-  if (d.t.length > 1) { recentDraw = () => drawChart($('recentView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: d.t[0], band: true, threshold: null }); recentDraw(); }
+  if (d.t.length > 1) {
+    const prev = recent, full = [d.t[0], d.t[d.t.length - 1]], same = prev && prev.id === s.id;
+    recent = { id: s.id, d, full, range: null, yRange: null, yFull: yExtent(d) };
+    const w = Number($('rWin').value) || 0;
+    // keep following the newest data while recording, otherwise start at the beginning
+    recent.range = w && w < full[1] - full[0] ? (!s.ended ? [full[1] - w, full[1]] : [full[0], full[0] + w]) : full.slice();
+    if (same && prev.pinned) { const pw = prev.range[1] - prev.range[0]; recent.range = clampRecent([prev.range[0], prev.range[0] + pw], full); recent.pinned = true; }
+    recentDraw = paintRecent; paintRecent();
+  }
 }
-let recentDraw = null;
+let recentDraw = null, recent = null;
+const clampRecent = ([a, b], full) => { const w = Math.min(b - a, full[1] - full[0]); a = Math.min(Math.max(a, full[0]), full[1] - w); return [a, a + w]; };
+function paintRecent() {
+  if (!recent) return;
+  const { d, full, range } = recent, cv = $('recentView');
+  const y = recent.yRange || ($('rYmode').value === 'all' ? recent.yFull : null);
+  drawChart(cv, d, { xRange: range, yRange: y, tZero: full[0], band: true, threshold: null });
+  const span = full[1] - full[0] || 1, scroll = range[1] - range[0] < span - 1e-6;
+  $('rTrack').hidden = !scroll;
+  $('rThumb').style.left = ((range[0] - full[0]) / span * 100) + '%';
+  $('rThumb').style.width = Math.max(1, (range[1] - range[0]) / span * 100) + '%';
+  $('rInfo').textContent = `${(range[1] - range[0]).toFixed(0)} s of ${span.toFixed(0)} s`;
+}
+const setRecentRange = (a, b) => { recent.range = clampRecent([a, b], recent.full); recent.pinned = true; paintRecent(); };
+$('rWin').onchange = () => {
+  if (!recent) return;
+  const w = Number($('rWin').value) || 0, span = recent.full[1] - recent.full[0];
+  recent.yRange = null; recent.pinned = false;
+  recent.range = w && w < span ? [recent.range[0], recent.range[0] + w] : recent.full.slice();
+  recent.range = clampRecent(recent.range, recent.full); paintRecent();
+};
+$('rYmode').onchange = () => { if (recent) { recent.yRange = null; paintRecent(); } };
+const recentY = (f) => {
+  if (!recent) return;
+  const m = $('recentView')._map, [a, b] = recent.yRange || [m.lo, m.hi], c = (a + b) / 2, h = (b - a) / 2 * f;
+  recent.yRange = [c - h, c + h]; paintRecent();
+};
+$('rYin').onclick = () => recentY(0.5); $('rYout').onclick = () => recentY(2);
+{
+  const tr = $('rTrack'); let grab = null;
+  const at = (e) => { const r = tr.getBoundingClientRect(); return recent.full[0] + (e.clientX - r.left) / r.width * (recent.full[1] - recent.full[0]); };
+  const move = (e) => { const w = recent.range[1] - recent.range[0], t = at(e) - grab * w; setRecentRange(t, t + w); };
+  tr.onmousedown = (e) => {
+    if (!recent) return;
+    const t = at(e), [a, b] = recent.range;
+    grab = t >= a && t <= b ? (t - a) / (b - a) : 0.5; move(e); e.preventDefault();
+  };
+  window.addEventListener('mousemove', (e) => { if (grab != null && recent) move(e); });
+  window.addEventListener('mouseup', () => { grab = null; });
+  $('recentView').addEventListener('wheel', (e) => {
+    if (!recent || $('rTrack').hidden) return;
+    e.preventDefault();
+    const w = recent.range[1] - recent.range[0], d = (e.deltaY || e.deltaX) / 500 * w;
+    setRecentRange(recent.range[0] + d, recent.range[1] + d);
+  }, { passive: false });
+}
 window.addEventListener('resize', () => { if (recentDraw && $('recentView').offsetParent) recentDraw(); });
 const goTab = (name) => document.querySelector(`nav.tabs button[data-tab="${name}"]`).click();
 

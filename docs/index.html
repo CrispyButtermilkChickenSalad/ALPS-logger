@@ -19,7 +19,7 @@
   button, input, select { background:#2c313a; color:var(--fg); border:1px solid #3a404a; border-radius:6px; padding:6px 10px; font:inherit; }
   button { cursor:pointer; } button:hover:not(:disabled) { border-color:var(--accent); } button:disabled { opacity:.45; cursor:default; }
   button.primary { background:var(--accent); color:#04121f; border-color:var(--accent); } button.danger { color:var(--bad); }
-  canvas { width:100%; height:340px; display:block; background:#101215; border-radius:6px; }
+  canvas { width:100%; height:340px; display:block; background:#101215; border-radius:6px; } canvas[hidden] { display:none; }
   table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #2c313a; }
   th { color:var(--dim); font-weight:500; } tr.sel { background:#232a34; }
   pre { margin:0; max-height:120px; overflow:auto; color:var(--dim); font-size:12px; }
@@ -52,10 +52,12 @@
   <a href="https://github.com/CrispyButtermilkChickenSalad/ALPS-logger" target="_blank" rel="noopener">GitHub</a>
 </header>
 <nav class="tabs">
-  <button data-tab="live" class="on">Live &amp; sessions</button>
+  <button data-tab="live" class="on">Record</button>
+  <button data-tab="sessions">Sessions</button>
   <button data-tab="gcode">G-code preview</button>
   <button data-tab="calib">Calibration</button>
   <button data-tab="pa">PA test</button>
+  <button data-tab="settings">Settings</button>
 </nav>
 <main>
   <div id="noSerial" class="warn">This browser has no Web Serial API. Use Chrome or Edge on desktop (or the simulator below). Firefox and Safari are not supported.</div>
@@ -78,19 +80,6 @@
     <canvas id="live"></canvas>
     <pre id="log"></pre>
     <p class="hint">Data stays in this browser (IndexedDB) – nothing is uploaded. Close Mellow's web tool first: only one program can use the serial port. Keep this tab open while recording.</p>
-  </section>
-  <section>
-    <h2>Klipper / Moonraker (optional)</h2>
-    <div id="mrWarn" class="warn">This page is served over https, so the browser blocks requests to a plain <code>http://</code> Moonraker on your network.
-      Options: open this tool from <code>http://localhost</code> (see the README), serve Moonraker over https, or allow "Insecure content" for this site in your browser's site settings.</div>
-    <div class="row">
-      <label>Moonraker URL <input id="mrUrl" placeholder="http://192.168.1.50:7125" style="width:260px"></label>
-      <label>API key <input id="mrKey" type="password" placeholder="(optional)" style="width:160px"></label>
-      <button id="btnMr">Enable</button>
-      <span id="mrState" class="pill">off</span>
-      <label title="Stops the screen from sleeping so the tab keeps running during long prints"><input id="wake" type="checkbox"> keep screen awake</label>
-    </div>
-    <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
     <h2>Capture for long prints</h2>
@@ -125,6 +114,8 @@
       <canvas id="recentView" style="height:200px"></canvas>
     </div>
   </section>
+  </div>
+  <div id="tab-sessions" class="tab" hidden>
   <section>
     <h2>Recorded sessions</h2>
     <canvas id="view" style="display:none"></canvas>
@@ -145,7 +136,22 @@
     <h2>Saved sessions in folder</h2>
     <div class="row"><span id="fList" class="pill">no folder selected</span><button id="fRefresh">Refresh</button></div>
     <table><thead><tr><th>File</th><th>Modified</th><th>Size</th><th></th></tr></thead><tbody id="ftbody"></tbody></table>
-    <p class="hint">CSV files in the auto-save folder (below). <b>View</b> charts one above, <b>Import</b> copies it into this browser so it is listed with the others. The G-code and PA tabs can also pick these files directly. Files written by the CSV button work too (extra force columns are ignored; only counts are read).</p>
+    <p class="hint">CSV files in the auto-save folder (set in the Settings tab). <b>View</b> charts one above, <b>Import</b> copies it into this browser so it is listed with the others. The G-code and PA tabs can also pick these files directly. Files written by the CSV button work too (extra force columns are ignored; only counts are read).</p>
+  </section>
+  </div>
+  <div id="tab-settings" class="tab" hidden>
+  <section>
+    <h2>Klipper / Moonraker (optional)</h2>
+    <div id="mrWarn" class="warn">This page is served over https, so the browser blocks requests to a plain <code>http://</code> Moonraker on your network.
+      Options: open this tool from <code>http://localhost</code> (see the README), serve Moonraker over https, or allow "Insecure content" for this site in your browser's site settings.</div>
+    <div class="row">
+      <label>Moonraker URL <input id="mrUrl" placeholder="http://192.168.1.50:7125" style="width:260px"></label>
+      <label>API key <input id="mrKey" type="password" placeholder="(optional)" style="width:160px"></label>
+      <button id="btnMr">Enable</button>
+      <span id="mrState" class="pill">off</span>
+      <label title="Stops the screen from sleeping so the tab keeps running during long prints"><input id="wake" type="checkbox"> keep screen awake</label>
+    </div>
+    <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
     <h2>Keep your data safe</h2>
@@ -161,7 +167,7 @@
       <input id="fileRestore" type="file" accept=".json,application/json" hidden>
       <span id="backupState" class="pill">–</span>
     </div>
-    <p class="hint">Sessions are saved to this browser as they record and survive closing the tab (recording itself stops when the page closes). The browser can still delete them if site data is cleared or storage runs low, so ask it to keep them (shown above), mirror recordings to a folder you choose (Chrome/Edge: counts-only CSV, appended live), and make a backup file now and then. For unattended logging use the Python service.</p>
+    <p class="hint">Sessions are saved to this browser as they record and survive closing the tab (recording itself stops when the page closes). The browser can still delete them if site data is cleared or storage runs low, so ask it to keep them (status shown at the left), mirror recordings to a folder you choose (Chrome/Edge: counts-only CSV, appended live), and make a backup file now and then. For unattended logging use the Python service.</p>
   </section>
   </div>
   <div id="tab-gcode" class="tab" hidden>

@@ -23,7 +23,19 @@ export class TimeMap {
 
 // ---- session columns ------------------------------------------------------------------------
 // Rows are [t, raw, filt, z, x, y]; returns typed columns with t relative to session start (NaN = missing).
-export async function loadColumns(db, id, session) {
+// Sessions captured as 'events' or 'envelope' only have gaps in the raw rows, so they are loaded from the
+// envelope instead (raw = bucket mean, filt = bucket filtered mean); `fromEnv` is set on the result.
+export async function loadColumns(db, id, session, { preferRaw = false } = {}) {
+  if (!preferRaw && (session.capture?.mode ?? 'full') !== 'full' && typeof db.getSamples === 'function') {
+    const env = await db.getSamples(id, 'env');
+    if (env.length) {
+      const n = env.length, t = new Float64Array(n), raw = new Float32Array(n), filt = new Float32Array(n);
+      const x = new Float32Array(n), y = new Float32Array(n), z = new Float32Array(n);
+      const nz = (v) => (v == null ? NaN : v);
+      env.forEach((r, i) => { t[i] = r[0] - session.started; raw[i] = nz(r[2]); filt[i] = nz(r[5]); z[i] = nz(r[6]); x[i] = nz(r[7]); y[i] = nz(r[8]); });
+      return { n, t, raw, filt, x, y, z, fromEnv: true };
+    }
+  }
   let cap = Math.max(1024, (session.n || 0) + 1024), n = 0;
   let t = new Float64Array(cap);
   let c = { raw: new Float32Array(cap), filt: new Float32Array(cap), x: new Float32Array(cap), y: new Float32Array(cap), z: new Float32Array(cap) };

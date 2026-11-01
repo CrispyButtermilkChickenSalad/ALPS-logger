@@ -17,7 +17,8 @@ export function initTabs({ db, live }) {
   // ---- tabs -------------------------------------------------------------------------
   const show = (name) => {
     document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
-    for (const t of ['live', 'gcode', 'calib', 'pa']) $('tab-' + t).hidden = t !== name;
+    for (const t of ['live', 'sessions', 'gcode', 'calib', 'pa', 'settings']) $('tab-' + t).hidden = t !== name;
+    if (name === 'live' || name === 'sessions') window.dispatchEvent(new Event('resize'));
     if (name === 'pa') { if (!pa) pa = initPa({ db }); pa.refresh(); }
     if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); } refreshSessions(); viewer.redraw(); }
   };
@@ -37,7 +38,7 @@ export function initTabs({ db, live }) {
       S.cols = await loadColumns(db, id, S.session);
     } catch (e) { setSync(e.message, 'bad'); return recolor(); }
     S.poses = extractPoses(S.cols);
-    setSync(S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset', S.poses.n ? '' : 'bad');
+    setSync((S.cols.fromEnv ? 'using envelope (' + S.cols.n + ' buckets); ' : '') + (S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset'), S.poses.n ? '' : 'bad');
     if (S.g) await runAuto(true); else recolor();
   };
 

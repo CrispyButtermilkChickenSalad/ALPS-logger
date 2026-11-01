@@ -188,15 +188,18 @@ async function renderRecent(rows) {
   }
   $('rMeta').textContent = `${fmt(s.started)} · ${dur(s)}${s.ended ? '' : ' (recording)'} · ${count}`;
   $('rStats').textContent = k ? `raw min ${lo} · mean ${Math.round(sum / k)} · max ${hi} · span ${hi - lo}` : 'no data yet';
-  $('rView').onclick = async () => { await openSession(s.id); $('view').scrollIntoView({ behavior: 'smooth' }); };
+  $('rView').onclick = async () => { goTab('sessions'); await openSession(s.id); $('view').scrollIntoView({ behavior: 'smooth' }); };
   $('rCsv').onclick = () => downloadCsv(s.id);
   $('rGcode').onclick = () => tabsApi.openInGcode(s.id);
-  if (d.t.length > 1) drawChart($('recentView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: d.t[0], band: true, threshold: null });
+  if (d.t.length > 1) { recentDraw = () => drawChart($('recentView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: d.t[0], band: true, threshold: null }); recentDraw(); }
 }
+let recentDraw = null;
+window.addEventListener('resize', () => { if (recentDraw && $('recentView').offsetParent) recentDraw(); });
+const goTab = (name) => document.querySelector(`nav.tabs button[data-tab="${name}"]`).click();
 
 async function loadFolder() {
   const body = $('ftbody'); body.innerHTML = '';
-  if (!db.dir) { $('fList').textContent = 'no folder selected (use Auto-save to folder below)'; return; }
+  if (!db.dir) { $('fList').textContent = 'no folder selected (use Auto-save to folder in Settings)'; return; }
   let list;
   try { list = await db.listFolder(); } catch (e) { $('fList').textContent = 'cannot read folder: ' + e.message; return; }
   $('fList').textContent = `${list.length} CSV file(s) in ${db.dir.name}`;
@@ -205,7 +208,7 @@ async function loadFolder() {
     tr.innerHTML = '<td></td><td></td><td></td><td></td>';
     tr.children[0].textContent = f.file; tr.children[1].textContent = fmt(f.modified); tr.children[2].textContent = Math.max(1, Math.round(f.size / 1024)) + ' KB';
     const v = document.createElement('button'); v.textContent = 'View';
-    v.onclick = async () => { try { await openSession(f.id); $('view').scrollIntoView({ behavior: 'smooth' }); } catch (e) { alert(e.message); } };
+    v.onclick = async () => { try { goTab('sessions'); await openSession(f.id); $('view').scrollIntoView({ behavior: 'smooth' }); } catch (e) { alert(e.message); } };
     const im = document.createElement('button'); im.textContent = 'Import';
     im.onclick = async () => { try { await db.importFromFolder(f.id); im.textContent = 'Imported'; im.disabled = true; loadSessions(); } catch (e) { alert(e.message); } };
     const g = document.createElement('button'); g.textContent = 'G-code tab'; g.onclick = () => tabsApi.openInGcode(f.id);

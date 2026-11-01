@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Capture, normalizeCapture } from '../docs/js/capture.js';
 import { Recorder } from '../docs/js/recorder.js';
@@ -155,4 +155,17 @@ test('mirror writes sidecar CSVs and the folder list hides them', async () => {
   assert.deepEqual(names, ['alps_1_p.csv', 'alps_1_p.env.csv', 'alps_1_p.events.csv']);
   assert.ok(dir.files.get('alps_1_p.events.csv').includes('marker'));
   assert.deepEqual((await m.listFolder()).map((f) => f.file), ['alps_1_p.csv']);
+});
+
+test('loadColumns uses the envelope for triggered sessions and raw when asked', async () => {
+  const { loadColumns } = await import('../docs/js/sync.js');
+  const db = new MemoryDb();
+  const id = await db.startSession('x', 'test', { capture: { mode: 'events' } }); db.sessions.get(id).started = 1000;
+  await db.addSamples(id, [[1001, 5, 5, null, null, null]], 'raw');
+  await db.addSamples(id, [[1000.5, 1, 10, 20, 0.1, 5, 2, 3, 4, 10], [1001.5, 1, 12, 20, 0.1, 6, 2, 3, 4, 10]], 'env');
+  const s = await db.getSession(id);
+  const e = await loadColumns(db, id, s);
+  assert.equal(e.fromEnv, true); assert.equal(e.n, 2); assert.equal(e.raw[0], 10); assert.equal(e.z[1], 2);
+  const r = await loadColumns(db, id, s, { preferRaw: true });
+  assert.equal(r.n, 1); assert.ok(!r.fromEnv);
 });

@@ -2,6 +2,7 @@
 // db interface: startSession(name, source)->id, endSession(id), addSamples(id, rows),
 //               listSessions(), getSession(id), deleteSession(id), getSamples(id)->rows
 // Row format: [t_epoch_seconds, raw|null, filt|null, z|null, x|null, y|null]
+import { Capture, normalizeCapture } from './capture.js';
 
 const ACTIVE = new Set(['printing']);
 const END = new Set(['complete', 'cancelled', 'error', 'standby']);
@@ -22,6 +23,7 @@ export class Recorder {
     this.deviceError = null;
     this.version = null;
     this.threshold = null;
+    this.capture = normalizeCapture({ mode: 'full' }); // library default keeps every sample; the web UI picks its own mode
     this.messages = [];
     this.sendCommand = async () => { throw new Error('no device connected'); };
     this.onsample = () => {};
@@ -45,7 +47,7 @@ export class Recorder {
     this._recent.push(t);
     if (this._recent.length > 500) this._recent.shift();
     if (this.session) {
-      this.session.pending.push(row);
+      this.session.cap.push(row);
       if (t - this._lastFlush >= this.flushInterval) this._flush(this.session);
     }
     this.onsample(row);
@@ -91,22 +93,34 @@ export class Recorder {
   }
 
   _start(name, source, auto) {
-    const s = { id: null, name, auto, pending: [], chain: Promise.resolve() };
-    s.ready = Promise.resolve(this.db.startSession(name, source, source === 'moonraker' && this.filename ? { file: this.filename } : {})).then((id) => { s.id = id; });
+    const s = { id: null, name, auto, pending: { raw: [], env: [], layer: [], evt: [] }, chain: Promise.resolve() };
+    s.cap = new Capture(this.capture, (kind, row) => s.pending[kind].push(row));
+    const meta = { capture: JSON.parse(JSON.stringify(this.capture)) };
+    if (source === 'moonraker' && this.filename) meta.file = this.filename;
+    s.ready = Promise.resolve(this.db.startSession(name, source, meta)).then((id) => { s.id = id; });
     s.ready.catch((e) => this.log('db error: ' + e.message));
     this.session = s;
     this._lastFlush = this.now();
     this._changed();
   }
 
+  // Applies to the running session immediately and to later ones.
+  setCapture(cfg) {
+    this.capture = normalizeCapture(cfg);
+    if (this.session) this.session.cap.setConfig(this.capture);
+  }
+
+  // Forces a raw-data window around "now" (shown as a 'marker' event).
+  mark() { if (this.session) this.session.cap.mark(); }
+
   _flush(s) {
     this._lastFlush = this.now();
-    const rows = s.pending;
-    if (!rows.length) return s.chain;
-    s.pending = [];
+    const batches = Object.entries(s.pending).filter(([, rows]) => rows.length);
+    if (!batches.length) return s.chain;
+    s.pending = { raw: [], env: [], layer: [], evt: [] };
     s.chain = s.chain
       .then(() => s.ready)
-      .then(() => this.db.addSamples(s.id, rows))
+      .then(async () => { for (const [kind, rows] of batches) await (kind === 'raw' ? this.db.addSamples(s.id, rows) : this.db.addSamples(s.id, rows, kind)); })
       .catch((e) => this.log('db error: ' + e.message));
     return s.chain;
   }
@@ -115,6 +129,7 @@ export class Recorder {
     const s = this.session;
     if (!s) throw new Error('no session is recording');
     this.session = null;
+    s.cap.close();
     this._flush(s);
     s.chain = s.chain.then(() => s.ready).then(() => this.db.endSession(s.id)).catch((e) => this.log('db error: ' + e.message));
     this._changed();

@@ -93,6 +93,28 @@
     <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
+    <h2>Capture for long prints</h2>
+    <div class="row">
+      <label>Mode <select id="capMode">
+        <option value="events">Envelope + triggered raw (best for long prints)</option>
+        <option value="full">Full raw + envelope</option>
+        <option value="envelope">Envelope only</option>
+      </select></label>
+      <label>Envelope bucket <select id="capBucket"><option value="0.05">50 ms</option><option value="0.1" selected>100 ms</option><option value="0.25">250 ms</option><option value="1">1 s</option></select></label>
+      <label>Before <input id="capPre" type="number" min="0" step="0.5" style="width:70px"> s</label>
+      <label>After <input id="capPost" type="number" min="0" step="0.5" style="width:70px"> s</label>
+      <button id="btnMark" disabled title="Keep a raw-data window around this moment">Mark event now</button>
+    </div>
+    <div class="row">
+      <span class="pill">event triggers</span>
+      <label><input id="trBand" type="checkbox"> noise band: beyond <input id="trBandK" type="number" min="1" step="0.5" style="width:60px"> × noise</label>
+      <label><input id="trAbs" type="checkbox"> deviation &gt; <input id="trAbsN" type="number" min="1" style="width:80px"> counts</label>
+      <label><input id="trSlope" type="checkbox"> change &gt; <input id="trSlopeN" type="number" min="1" style="width:80px"> counts in <input id="trSlopeW" type="number" min="1" style="width:60px"> ms</label>
+      <label title="Needs Moonraker so the toolhead Z is known"><input id="trLayer" type="checkbox"> layer change</label>
+    </div>
+    <p class="hint">The envelope (min / mean / max / noise per bucket) and per-layer statistics are always recorded, so a multi-hour print stays small. In "triggered raw" mode, full-rate samples are only kept around events (and a few seconds before and after). "Deviation" and "noise" are measured against a slowly-adapting baseline, so thermal drift does not trigger events. Changes apply immediately, including to a running recording.</p>
+  </section>
+  <section>
     <h2>Most recent session</h2>
     <div id="recentEmpty" class="hint">No recorded sessions yet.</div>
     <div id="recentBody" hidden>
@@ -107,6 +129,16 @@
     <h2>Recorded sessions</h2>
     <canvas id="view" style="display:none"></canvas>
     <div id="viewHint" class="pill" style="display:none; margin:8px 0">drag to zoom, double-click to reset</div>
+    <div id="sumBox" hidden>
+      <div class="row"><b id="sumTitle"></b><span id="sumInfo" class="pill"></span>
+        <button id="sumEnv">Envelope CSV</button><button id="sumLayers">Layers CSV</button><button id="sumEvents">Events CSV</button></div>
+      <div class="row" style="align-items:flex-start">
+        <div style="flex:1;min-width:320px"><h2>Layers</h2><div style="max-height:240px;overflow:auto"><table><thead><tr><th>#</th><th>Z</th><th>Time</th><th>Baseline</th><th>Noise σ</th><th>Peak Δ</th><th>Events</th></tr></thead><tbody id="layBody"></tbody></table></div></div>
+        <div style="flex:1;min-width:320px"><h2>Events</h2><div style="max-height:240px;overflow:auto"><table><thead><tr><th>Time</th><th>Trigger</th><th>Peak Δ</th><th>Z</th><th></th></tr></thead><tbody id="evBody"></tbody></table></div></div>
+      </div>
+      <canvas id="evView" style="height:200px" hidden></canvas>
+    </div>
+    <p id="sumNone" class="hint" hidden>No envelope data for this session (recorded before long-print capture existed).</p>
     <table><thead><tr><th>#</th><th>Name</th><th>Started</th><th>Duration</th><th>Samples</th><th></th></tr></thead><tbody id="tbody"></tbody></table>
   </section>
   <section>

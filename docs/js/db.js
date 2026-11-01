@@ -23,9 +23,10 @@ export class IdbDb {
   async _closeStale() {
     for (const s of await this.listSessions()) {
       if (s.ended != null) continue;
-      const rows = await this.getSamples(s.id);
+      const rows = await this.getSamples(s.id), env = await this.getSamples(s.id, 'env');
+      const last = Math.max(rows.length ? rows[rows.length - 1][0] : s.started, env.length ? env[env.length - 1][0] : s.started);
       const tx = this.db.transaction('sessions', 'readwrite');
-      tx.objectStore('sessions').put({ ...s, ended: rows.length ? rows[rows.length - 1][0] : s.started });
+      tx.objectStore('sessions').put({ ...s, ended: last });
       await done(tx);
     }
   }
@@ -45,21 +46,23 @@ export class IdbDb {
     await done(tx);
   }
 
-  async addSamples(id, rows) {
+  async addSamples(id, rows, kind = 'raw') {
     if (!rows.length) return;
     const tx = this.db.transaction(['sessions', 'chunks'], 'readwrite');
-    tx.objectStore('chunks').add({ sid: id, rows });
+    tx.objectStore('chunks').add({ sid: id, kind, rows });
     const st = tx.objectStore('sessions');
     const s = await req(st.get(id));
-    if (s) st.put({ ...s, n: s.n + rows.length });
+    if (s) st.put(kind === 'raw' ? { ...s, n: s.n + rows.length } : { ...s, [`n_${kind}`]: (s[`n_${kind}`] || 0) + rows.length });
     await done(tx);
   }
 
-  async importSession(session, rows) {
+  // `extra` holds the non-raw kinds ({env, layer, evt}) of a backed-up session.
+  async importSession(session, rows, extra = {}) {
     const { id, ...rest } = session;
     const tx = this.db.transaction(['sessions', 'chunks'], 'readwrite');
     const sid = await req(tx.objectStore('sessions').add({ ...rest, n: rows.length }));
-    for (let i = 0; i < rows.length; i += 5000) tx.objectStore('chunks').add({ sid, rows: rows.slice(i, i + 5000) });
+    for (let i = 0; i < rows.length; i += 5000) tx.objectStore('chunks').add({ sid, kind: 'raw', rows: rows.slice(i, i + 5000) });
+    for (const [kind, kr] of Object.entries(extra)) for (let i = 0; i < kr.length; i += 5000) tx.objectStore('chunks').add({ sid, kind, rows: kr.slice(i, i + 5000) });
     await done(tx);
     return sid;
   }
@@ -83,18 +86,17 @@ export class IdbDb {
     await done(tx);
   }
 
-  async getSamples(id) {
+  async getSamples(id, kind = 'raw') {
     const chunks = await req(this.db.transaction('chunks').objectStore('chunks').index('sid').getAll(id));
-    chunks.sort((a, b) => a.id - b.id);
-    return chunks.flatMap((c) => c.rows);
+    return chunks.filter((c) => (c.kind || 'raw') === kind).sort((a, b) => a.id - b.id).flatMap((c) => c.rows);
   }
 
   // Streams chunk by chunk so hours-long sessions do not need to be held as row arrays.
-  async scanSamples(id, cb) {
+  async scanSamples(id, cb, kind = 'raw') {
     const keys = (await req(this.db.transaction('chunks').objectStore('chunks').index('sid').getAllKeys(id))).sort((a, b) => a - b);
     for (const k of keys) {
       const c = await req(this.db.transaction('chunks').objectStore('chunks').get(k));
-      if (c) cb(c.rows);
+      if (c && (c.kind || 'raw') === kind) cb(c.rows);
     }
   }
 }
@@ -102,23 +104,29 @@ export class IdbDb {
 // Same interface, in memory (tests).
 export class MemoryDb {
   constructor() { this.sessions = new Map(); this.rows = new Map(); this.next = 1; }
+  _k(id, kind) { const m = this.rows.get(id); return m ? (m[kind] ||= []) : []; }
   async startSession(name, source, meta = {}) {
     const id = this.next++;
     this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta });
-    this.rows.set(id, []);
+    this.rows.set(id, { raw: [] });
     return id;
   }
-  async importSession(session, rows) {
+  async importSession(session, rows, extra = {}) {
     const { id, ...rest } = session;
     const nid = this.next++;
-    this.sessions.set(nid, { ...rest, id: nid, n: rows.length }); this.rows.set(nid, rows.slice());
+    this.sessions.set(nid, { ...rest, id: nid, n: rows.length }); this.rows.set(nid, { raw: rows.slice() });
+    for (const [k, v] of Object.entries(extra)) this.rows.get(nid)[k] = v.slice();
     return nid;
   }
   async endSession(id) { this.sessions.get(id).ended = Date.now() / 1000; }
-  async addSamples(id, rows) { this.rows.get(id).push(...rows); this.sessions.get(id).n += rows.length; }
+  async addSamples(id, rows, kind = 'raw') {
+    this._k(id, kind).push(...rows);
+    const s = this.sessions.get(id);
+    if (kind === 'raw') s.n += rows.length; else s[`n_${kind}`] = (s[`n_${kind}`] || 0) + rows.length;
+  }
   async listSessions() { return [...this.sessions.values()].sort((a, b) => b.id - a.id); }
   async getSession(id) { return this.sessions.get(id); }
   async deleteSession(id) { this.sessions.delete(id); this.rows.delete(id); }
-  async getSamples(id) { return this.rows.get(id) || []; }
-  async scanSamples(id, cb) { cb(this.rows.get(id) || []); }
+  async getSamples(id, kind = 'raw') { return this._k(id, kind); }
+  async scanSamples(id, cb, kind = 'raw') { cb(this._k(id, kind)); }
 }

@@ -1,5 +1,5 @@
 // Durability helpers: persistent-storage request, auto-save mirror to a user-chosen folder, backup/restore.
-import { toCsv, safeName } from './data.js';
+import { toCsv, kindToCsv, KINDS, safeName } from './data.js';
 
 export async function requestPersistence(storage = globalThis.navigator?.storage) {
   if (!storage?.persist) return { supported: false, persisted: false };
@@ -84,7 +84,7 @@ export class MirrorDb {
     if (!this.dir) return [];
     const out = [];
     for await (const [name, h] of this.dir.entries()) {
-      if (h.kind !== 'file' || !/\.csv$/i.test(name)) continue;
+      if (h.kind !== 'file' || !/\.csv$/i.test(name) || /\.(env|layers|events)\.csv$/i.test(name)) continue;
       const f = await h.getFile();
       out.push({ id: 'f:' + name, name: name.replace(/\.csv$/i, ''), file: name, size: f.size, modified: f.lastModified / 1000 });
     }
@@ -102,8 +102,13 @@ export class MirrorDb {
     return v;
   }
   async getSession(id) { return isFolderId(id) ? (await this._folderLoad(id)).session : this.inner.getSession(id); }
-  async getSamples(id) { return isFolderId(id) ? (await this._folderLoad(id)).rows : this.inner.getSamples(id); }
-  async scanSamples(id, cb) { if (isFolderId(id)) cb((await this._folderLoad(id)).rows); else await this.inner.scanSamples(id, cb); }
+  async getSamples(id, kind = 'raw') {
+    if (isFolderId(id)) return kind === 'raw' ? (await this._folderLoad(id)).rows : [];
+    return this.inner.getSamples(id, kind);
+  }
+  async scanSamples(id, cb, kind = 'raw') {
+    if (isFolderId(id)) { if (kind === 'raw') cb((await this._folderLoad(id)).rows); } else await this.inner.scanSamples(id, cb, kind);
+  }
   // Copies a folder CSV into the browser database; returns the new session id.
   async importFromFolder(id) {
     const { session, rows } = await this._folderLoad(id);
@@ -113,47 +118,56 @@ export class MirrorDb {
     const p = (this.chains.get(id) || Promise.resolve()).then(fn).catch((e) => { this.onError(e); });
     this.chains.set(id, p); return p;
   }
+  // Raw samples go to <name>.csv; envelope / layers / events go to <name>.env.csv, .layers.csv, .events.csv.
+  async _file(id, kind) {
+    const key = `${id}:${kind}`;
+    if (this.files.has(key)) return this.files.get(key);
+    const s = await this.inner.getSession(id);
+    const base = `alps_${id}_${safeName(s.name)}`;
+    const fh = await this.dir.getFileHandle(kind === 'raw' ? `${base}.csv` : `${base}.${KINDS[kind].suffix}.csv`, { create: true });
+    const f = { fh, session: s, size: 0 };
+    this.files.set(key, f);
+    await this._append(f, kind === 'raw' ? toCsv(s, []) : kindToCsv(kind, s, []));
+    return f;
+  }
   async startSession(name, source, meta) {
     const id = await this.inner.startSession(name, source, meta);
-    if (this.dir) {
-      this._queue(id, async () => {
-        const s = await this.inner.getSession(id);
-        const fh = await this.dir.getFileHandle(`alps_${id}_${safeName(name)}.csv`, { create: true });
-        this.files.set(id, { fh, session: s, size: 0 });
-        await this._append(id, toCsv(s, []));
-      });
-    }
+    if (this.dir) this._queue(id, () => this._file(id, 'raw'));
     return id;
   }
-  async _append(id, text) {
-    const f = this.files.get(id); if (!f || !text) return;
+  async _append(f, text) {
+    if (!f || !text) return;
     const w = await f.fh.createWritable({ keepExistingData: true });
     await w.seek(f.size); await w.write(text); await w.close();
     f.size += new TextEncoder().encode(text).length; this.lastWrite = Date.now();
   }
-  async addSamples(id, rows) {
-    await this.inner.addSamples(id, rows);
+  async addSamples(id, rows, kind = 'raw') {
+    await this.inner.addSamples(id, rows, kind);
     if (this.dir && this.chains.has(id)) {
       this._queue(id, async () => {
-        const f = this.files.get(id); if (!f) return;
-        await this._append(id, toCsv(f.session, rows).split('\n').slice(1).join('\n'));
+        const f = await this._file(id, kind);
+        const text = kind === 'raw' ? toCsv(f.session, rows) : kindToCsv(kind, f.session, rows, null, [], false);
+        await this._append(f, kind === 'raw' ? text.split('\n').slice(1).join('\n') : text);
       });
     }
   }
   async endSession(id) {
     await this.inner.endSession(id);
     await (this.chains.get(id) || Promise.resolve());
-    this.files.delete(id); this.chains.delete(id);
+    for (const k of [...this.files.keys()]) if (k.startsWith(`${id}:`)) this.files.delete(k);
+    this.chains.delete(id);
   }
 }
 
 // ---- backup / restore ---------------------------------------------------------------------------
 export async function exportBackup(db) {
-  const parts = ['{"format":"alps-logger-backup","version":1,"sessions":['];
+  const parts = ['{"format":"alps-logger-backup","version":2,"sessions":['];
   const list = (await db.listSessions()).sort((a, b) => a.id - b.id);
   let first = true;
   for (const s of list) {
-    parts.push((first ? '' : ',') + JSON.stringify({ session: s, rows: await db.getSamples(s.id) }));
+    const extra = {};
+    for (const k of Object.keys(KINDS)) { const r = await db.getSamples(s.id, k); if (r.length) extra[k] = r; }
+    parts.push((first ? '' : ',') + JSON.stringify({ session: s, rows: await db.getSamples(s.id), extra }));
     first = false;
   }
   parts.push(']}');
@@ -165,6 +179,6 @@ export async function importBackup(db, text) {
   try { doc = JSON.parse(text); } catch { throw new Error('Not a valid backup file'); }
   if (doc?.format !== 'alps-logger-backup' || !Array.isArray(doc.sessions)) throw new Error('Not an ALPS logger backup file');
   let n = 0;
-  for (const { session, rows } of doc.sessions) { await db.importSession(session, rows); n++; }
+  for (const { session, rows, extra } of doc.sessions) { await db.importSession(session, rows, extra || {}); n++; }
   return n;
 }

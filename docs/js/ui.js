@@ -2,8 +2,9 @@ import { Recorder } from './recorder.js';
 import { IdbDb } from './db.js';
 import { SerialSource, SimulatedSource, serialSupported } from './sources.js';
 import { MoonrakerPoller, mixedContentProblem } from './moonraker.js';
-import { downsample, toCsv, exportMeta, safeName } from './data.js';
-import { loadCalib } from './calib.js';
+import { downsample, toCsv, exportMeta, kindToCsv, KINDS, safeName } from './data.js';
+import { loadCalib, isCalibrated, toUnits } from './calib.js';
+import { normalizeCapture } from './capture.js';
 import { MirrorDb, requestPersistence, loadFolderHandle, saveFolderHandle, exportBackup, importBackup } from './persist.js';
 import { drawChart } from './chart.js';
 import { initTabs } from './ui_tabs.js';
@@ -45,6 +46,7 @@ function renderStatus() {
   $('pZ').textContent = 'Z ' + (s.z == null ? '–' : s.z.toFixed(2));
   $('btnStart').disabled = s.recording;
   $('btnStop').disabled = !s.recording;
+  $('btnMark').disabled = !s.recording;
   const on = s.connected;
   $('btnSerial').style.display = on ? 'none' : '';
   $('btnSim').style.display = on ? 'none' : '';
@@ -124,7 +126,7 @@ async function loadSessions() {
   $('tbody').innerHTML = '';
   for (const s of rows) {
     const tr = document.createElement('tr'); if (s.id === selected) tr.className = 'sel';
-    tr.innerHTML = `<td>${s.id}</td><td></td><td>${fmt(s.started)}</td><td>${dur(s)}${s.ended ? '' : ' ●'}</td><td>${s.n}</td><td></td>`;
+    tr.innerHTML = `<td>${s.id}</td><td></td><td>${fmt(s.started)}</td><td>${dur(s)}${s.ended ? '' : ' ●'}</td><td>${s.n}${s.capture && s.capture.mode !== 'full' ? ' kept' : ''}</td><td></td>`;
     tr.children[1].textContent = s.name;
     const v = document.createElement('button'); v.textContent = 'View'; v.onclick = () => openSession(s.id);
     const c = document.createElement('button'); c.textContent = 'CSV'; c.onclick = () => downloadCsv(s.id);
@@ -133,7 +135,7 @@ async function loadSessions() {
       if (rec.session && rec.session.id === s.id) return alert('Session is recording');
       if (!confirm(`Delete session ${s.id}?`)) return;
       await db.deleteSession(s.id);
-      if (selected === s.id) { view = null; selected = null; $('view').style.display = $('viewHint').style.display = 'none'; }
+      if (selected === s.id) { view = null; selected = null; $('view').style.display = $('viewHint').style.display = 'none'; $('sumBox').hidden = true; }
       loadSessions();
     };
     tr.children[5].append(v, ' ', c, ' ', d); $('tbody').append(tr);
@@ -148,20 +150,47 @@ const chartData = (rows, n) => {
   return d;
 };
 
+// Envelope rows -> chart data, merged down to <= n points (min of mins, max of maxes, mean of means).
+function envChartData(env, n) {
+  const d = { t: [], raw: [], lo: [], hi: [], filt: [], z: [] };
+  const stride = Math.max(1, Math.ceil(env.length / n));
+  for (let i = 0; i < env.length; i += stride) {
+    let lo = Infinity, hi = -Infinity, ms = 0, mc = 0, fs = 0, fc = 0, z = null;
+    for (let j = i; j < Math.min(env.length, i + stride); j++) {
+      const r = env[j]; lo = Math.min(lo, r[1]); hi = Math.max(hi, r[3]); ms += r[2] * r[9]; mc += r[9];
+      if (r[5] != null) { fs += r[5]; fc++; } if (r[6] != null) z = r[6];
+    }
+    d.t.push(env[i][0]); d.raw.push(mc ? ms / mc : null); d.lo.push(lo); d.hi.push(hi); d.filt.push(fc ? fs / fc : null); d.z.push(z);
+  }
+  return d;
+}
+
+// Triggered / envelope-only sessions have gaps in the raw data, so they are charted from the envelope instead.
+async function sessionChart(s, n) {
+  const env = typeof s.id === 'number' ? await db.getSamples(s.id, 'env') : [];
+  if (env.length && (s.capture?.mode ?? 'full') !== 'full') return { d: envChartData(env, n), env, fromEnv: true };
+  return { d: chartData(await db.getSamples(s.id), n), env, fromEnv: false };
+}
+
 async function renderRecent(rows) {
   const s = rows[0];
   $('recentEmpty').hidden = !!s; $('recentBody').hidden = !s;
   if (!s) return;
-  const samples = await db.getSamples(s.id);
+  const { d, env, fromEnv } = await sessionChart(s, 2000);
   $('rName').textContent = `#${s.id} ${s.name}`;
-  $('rMeta').textContent = `${fmt(s.started)} · ${dur(s)}${s.ended ? '' : ' (recording)'} · ${samples.length} samples`;
-  let lo = Infinity, hi = -Infinity, sum = 0, k = 0;
-  for (const r of samples) { const v = r[1]; if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; sum += v; k++; }
+  let lo = Infinity, hi = -Infinity, sum = 0, k = 0, count;
+  if (fromEnv) {
+    for (const r of env) { lo = Math.min(lo, r[1]); hi = Math.max(hi, r[3]); sum += r[2] * r[9]; k += r[9]; }
+    count = `${k} samples seen · ${s.n} kept · ${s.n_evt || 0} events`;
+  } else {
+    for (const r of await db.getSamples(s.id)) { const v = r[1]; if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; sum += v; k++; }
+    count = `${s.n} samples`;
+  }
+  $('rMeta').textContent = `${fmt(s.started)} · ${dur(s)}${s.ended ? '' : ' (recording)'} · ${count}`;
   $('rStats').textContent = k ? `raw min ${lo} · mean ${Math.round(sum / k)} · max ${hi} · span ${hi - lo}` : 'no data yet';
   $('rView').onclick = async () => { await openSession(s.id); $('view').scrollIntoView({ behavior: 'smooth' }); };
   $('rCsv').onclick = () => downloadCsv(s.id);
   $('rGcode').onclick = () => tabsApi.openInGcode(s.id);
-  const d = chartData(samples, 2000);
   if (d.t.length > 1) drawChart($('recentView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: d.t[0], band: true, threshold: null });
 }
 
@@ -184,26 +213,74 @@ async function loadFolder() {
   }
 }
 $('fRefresh').onclick = () => loadFolder();
+const download = (text, type, name) => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
 async function downloadCsv(id) {
   const s = await db.getSession(id);
-  const rows = await db.getSamples(id), calib = loadCalib(localStorage), base = `alps_${id}_${safeName(s.name)}`;
-  const save = (text, type, name) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  };
-  save(toCsv(s, rows, calib), 'text/csv', base + '.csv');
+  const rows = await db.getSamples(id), env = await db.getSamples(id, 'env'), calib = loadCalib(localStorage), base = `alps_${id}_${safeName(s.name)}`;
+  download(toCsv(s, rows, calib, env), 'text/csv', base + '.csv');
   // Sidecar documents units and the calibration used, for research reproducibility.
-  setTimeout(() => save(JSON.stringify(exportMeta(s, rows, calib), null, 2), 'application/json', base + '.meta.json'), 300);
+  setTimeout(() => download(JSON.stringify(exportMeta(s, rows, calib, env), null, 2), 'application/json', base + '.meta.json'), 300);
+}
+async function downloadKind(id, kind) {
+  const s = await db.getSession(id), calib = loadCalib(localStorage);
+  const env = await db.getSamples(id, 'env'), rows = kind === 'env' ? env : await db.getSamples(id, kind);
+  if (!rows.length) return alert('Nothing recorded for this part of the session.');
+  download(kindToCsv(kind, s, rows, calib, env), 'text/csv', `alps_${id}_${safeName(s.name)}.${KINDS[kind].suffix}.csv`);
 }
 async function openSession(id) {
   selected = id;
-  const d = chartData(await db.getSamples(id), 4000);
+  const s = await db.getSession(id);
+  const { d, env } = await sessionChart(s, 4000);
+  renderSummary(id, s, env).catch(() => {});
   if (!d.t.length) { view = null; $('view').style.display = $('viewHint').style.display = 'none'; return loadSessions(); }
   view = { d, full: [d.t[0], d.t[d.t.length - 1]], range: null, zero: d.t[0] };
   view.range = view.full.slice();
   $('view').style.display = $('viewHint').style.display = 'block';
   renderView(); loadSessions();
+}
+
+// Layers / events tables for sessions that have long-print capture data.
+const hms = (sec) => { sec = Math.max(0, sec); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60); return `${h ? h + ':' + String(m).padStart(2, '0') : m}:${(sec % 60).toFixed(1).padStart(4, '0')}`; };
+async function renderSummary(id, s, env) {
+  const has = env.length > 0;
+  $('sumBox').hidden = !has; $('evView').hidden = true;
+  $('sumNone').hidden = has || typeof id !== 'number';
+  if (!has) return;
+  const layers = await db.getSamples(id, 'layer'), evts = await db.getSamples(id, 'evt'), calib = loadCalib(localStorage);
+  const cal = isCalibrated(calib), u = (d) => (cal ? ` (${toUnits(d, calib, 0).toFixed(2)} ${calib.unit})` : '');
+  const seen = env.reduce((a, r) => a + r[9], 0);
+  $('sumTitle').textContent = `#${id} ${s.name}`;
+  $('sumInfo').textContent = `${seen} samples seen · ${env.length} envelope buckets · ${layers.length} layers · ${evts.length} events · capture: ${s.capture?.mode || 'full'}`;
+  $('sumLayers').disabled = !layers.length; $('sumEvents').disabled = !evts.length;
+  $('sumEnv').onclick = () => downloadKind(id, 'env'); $('sumLayers').onclick = () => downloadKind(id, 'layer'); $('sumEvents').onclick = () => downloadKind(id, 'evt');
+  $('layBody').innerHTML = '';
+  for (const r of layers) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r[3]}</td><td>${r[2]}</td><td>${hms(r[0] - s.started)}</td><td>${Math.round(r[4])}</td><td>${r[5].toFixed(1)}${u(r[5])}</td><td>${r[8]}${u(r[8])}</td><td>${r[9]}</td>`;
+    $('layBody').append(tr);
+  }
+  $('evBody').innerHTML = '';
+  for (const r of evts) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${hms(r[0] - s.started)}</td><td></td><td>${r[3]}${u(r[3])}</td><td>${r[6] ?? ''}</td><td></td>`;
+    tr.children[1].textContent = r[2];
+    const zoom = document.createElement('button'); zoom.textContent = 'Zoom';
+    zoom.onclick = () => { if (!view) return; const a = Math.max(view.full[0], r[0] - 5), b = Math.min(view.full[1], r[1] + 5); view.range = [a, b]; renderView(); $('view').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+    const raw = document.createElement('button'); raw.textContent = 'Raw';
+    raw.onclick = async () => {
+      const rows = (await db.getSamples(id)).filter((x) => x[0] >= r[0] - 3 && x[0] <= r[1] + 3);
+      if (rows.length < 2) return alert('No raw samples were kept for this event (envelope-only capture).');
+      const d = chartData(rows, 3000);
+      $('evView').hidden = false;
+      drawChart($('evView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: r[0], band: false, threshold: null });
+      $('evView').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    tr.children[4].append(zoom, ' ', raw); $('evBody').append(tr);
+  }
 }
 function renderView() { if (view) drawChart($('view'), view.d, { xRange: view.range, tZero: view.zero, band: true, threshold: null }); }
 (() => {
@@ -255,6 +332,29 @@ async function initDurability() {
   };
 }
 
+// ---- long-print capture settings --------------------------------------------------------------------
+function initCapture() {
+  let cfg;
+  try { cfg = normalizeCapture(JSON.parse(localStorage.getItem('alpsCapture') || '{}')); } catch { cfg = normalizeCapture(); }
+  const t = cfg.triggers;
+  const show = (c) => {
+    $('capMode').value = c.mode; $('capBucket').value = String(c.bucketS); $('capPre').value = c.preS; $('capPost').value = c.postS;
+    $('trBand').checked = t.band.on; $('trBandK').value = t.band.k; $('trAbs').checked = t.abs.on; $('trAbsN').value = t.abs.counts;
+    $('trSlope').checked = t.slope.on; $('trSlopeN').value = t.slope.counts; $('trSlopeW').value = t.slope.windowMs; $('trLayer').checked = t.layer.on;
+  };
+  const read = () => normalizeCapture({
+    ...cfg, mode: $('capMode').value, bucketS: $('capBucket').value, preS: $('capPre').value, postS: $('capPost').value,
+    triggers: {
+      band: { on: $('trBand').checked, k: $('trBandK').value }, abs: { on: $('trAbs').checked, counts: $('trAbsN').value },
+      slope: { on: $('trSlope').checked, counts: $('trSlopeN').value, windowMs: $('trSlopeW').value }, layer: { on: $('trLayer').checked },
+    },
+  });
+  const apply = () => { cfg = read(); localStorage.setItem('alpsCapture', JSON.stringify(cfg)); rec.setCapture(cfg); };
+  show(cfg); rec.setCapture(cfg);
+  for (const id of ['capMode', 'capBucket', 'capPre', 'capPost', 'trBand', 'trBandK', 'trAbs', 'trAbsN', 'trSlope', 'trSlopeN', 'trSlopeW', 'trLayer']) $(id).onchange = apply;
+  $('btnMark').onclick = () => rec.mark();
+}
+
 // ---- boot ------------------------------------------------------------------------------------
 (async () => {
   if (!serialSupported()) $('noSerial').style.display = 'block';
@@ -266,6 +366,7 @@ async function initDurability() {
   const idb = db;
   db = new MirrorDb(idb, { onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; } });
   rec = new Recorder(db);
+  initCapture();
   tabsApi = initTabs({ db, live });
   initDurability();
   rec.onsample = pushLive;

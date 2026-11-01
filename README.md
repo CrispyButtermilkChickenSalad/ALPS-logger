@@ -23,6 +23,9 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
   Moonraker must list the page origin in `[authorization] cors_domains`. An https page cannot call a plain `http://` Moonraker
   (mixed content) unless you run the page from `http://localhost` (`python -m http.server --directory docs`),
   serve Moonraker over https, or allow insecure content for the site.
+- **Long prints:** the *Capture for long prints* panel keeps a per-bucket envelope (min/mean/max/noise) and per-layer statistics, and
+  in the default mode only keeps full-rate samples around events. Event triggers (noise band, absolute deviation, slope, layer change,
+  manual marker) can each be toggled. Envelope, layer and event data export as `.env.csv`, `.layers.csv`, `.events.csv`.
 - **Most recent session** and **Saved sessions in folder** sections: the folder list shows CSVs auto-saved to your chosen folder
   (View / Import into browser / open in G-code tab). The G-code and PA tabs can pick sessions from the browser or the folder.
   Folder CSVs hold counts only, and the Moonraker file name isn't stored in them.

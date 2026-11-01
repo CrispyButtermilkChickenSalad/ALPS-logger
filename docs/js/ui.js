@@ -165,7 +165,7 @@ function envChartData(env, n) {
   return d;
 }
 
-// Triggered / envelope-only sessions have gaps in the raw data, so they are charted from the envelope instead.
+// Triggered / envelope-only sessions have gaps in the raw data, so they are charted from the summary trace instead.
 async function sessionChart(s, n) {
   const env = typeof s.id === 'number' ? await db.getSamples(s.id, 'env') : [];
   if (env.length && (s.capture?.mode ?? 'full') !== 'full') return { d: envChartData(env, n), env, fromEnv: true };
@@ -257,7 +257,7 @@ async function renderSummary(id, s, env) {
   const cal = isCalibrated(calib), u = (d) => (cal ? ` (${toUnits(d, calib, 0).toFixed(2)} ${calib.unit})` : '');
   const seen = env.reduce((a, r) => a + r[9], 0);
   $('sumTitle').textContent = `#${id} ${s.name}`;
-  $('sumInfo').textContent = `${seen} samples seen · ${env.length} envelope buckets · ${layers.length} layers · ${evts.length} events · capture: ${s.capture?.mode || 'full'}`;
+  $('sumInfo').textContent = `${seen} samples seen · ${env.length} summary buckets · ${layers.length} layers · ${evts.length} events · capture: ${s.capture?.mode || 'full'}`;
   $('sumLayers').disabled = !layers.length; $('sumEvents').disabled = !evts.length;
   $('sumEnv').onclick = () => downloadKind(id, 'env'); $('sumLayers').onclick = () => downloadKind(id, 'layer'); $('sumEvents').onclick = () => downloadKind(id, 'evt');
   $('layBody').innerHTML = '';
@@ -276,7 +276,7 @@ async function renderSummary(id, s, env) {
     const raw = document.createElement('button'); raw.textContent = 'Raw';
     raw.onclick = async () => {
       const rows = (await db.getSamples(id)).filter((x) => x[0] >= r[0] - 3 && x[0] <= r[1] + 3);
-      if (rows.length < 2) return alert('No raw samples were kept for this event (envelope-only capture).');
+      if (rows.length < 2) return alert('No raw samples were kept for this event (summary-only capture).');
       const d = chartData(rows, 3000);
       $('evView').hidden = false;
       drawChart($('evView'), d, { xRange: [d.t[0], d.t[d.t.length - 1]], tZero: r[0], band: false, threshold: null });
@@ -285,14 +285,76 @@ async function renderSummary(id, s, env) {
     tr.children[4].append(zoom, ' ', raw); $('evBody').append(tr);
   }
 }
-function renderView() { if (view) drawChart($('view'), view.d, { xRange: view.range, tZero: view.zero, band: true, threshold: null }); }
+function renderView() { if (view) { drawChart($('view'), view.d, { xRange: view.range, tZero: view.zero, band: true, threshold: null }); syncBar(); } }
+let setRange = () => {}, syncBar = () => {};
 (() => {
-  const cv = $('view'); let drag = null;
-  const tAt = (e) => { const m = cv._map, r = cv.getBoundingClientRect(); return m.x0 + (e.clientX - r.left - m.L) / (m.W - m.L - m.R) * (m.x1 - m.x0); };
-  cv.onmousedown = (e) => { drag = tAt(e); };
-  cv.onmouseup = (e) => { if (drag == null) return; const a = drag, b = tAt(e); drag = null; if (Math.abs(b - a) > (view.range[1] - view.range[0]) * 0.01) { view.range = [Math.min(a, b), Math.max(a, b)]; renderView(); } };
-  cv.ondblclick = () => { view.range = view.full.slice(); renderView(); };
-  window.addEventListener('resize', renderView);
+  const cv = $('view'), track = $('vTrack'), thumb = $('vThumb'), MIN_SPAN = 0.05;
+  let sel = null; // {a, b} in seconds while dragging a window
+  const span = () => view.full[1] - view.full[0];
+  const clampRange = (a, b) => {
+    const full = view.full, w = Math.min(Math.max(b - a, MIN_SPAN), span());
+    a = Math.min(Math.max(a, full[0]), full[1] - w);
+    return [a, a + w];
+  };
+  const mx = (e) => { const m = cv._map, r = cv.getBoundingClientRect(); return Math.min(Math.max(e.clientX - r.left, m.L), m.W - m.R); };
+  const tAt = (e) => { const m = cv._map; return m.x0 + (mx(e) - m.L) / (m.W - m.L - m.R) * (m.x1 - m.x0); };
+  syncBar = () => {
+    if (!view) return;
+    const s = span() || 1, w = view.range[1] - view.range[0];
+    thumb.style.left = ((view.range[0] - view.full[0]) / s * 100) + '%';
+    thumb.style.width = Math.max(1, w / s * 100) + '%';
+    $('vInfo').textContent = `${w.toFixed(w < 10 ? 2 : 1)} s of ${s.toFixed(1)} s`;
+  };
+  const paint = () => {
+    renderView();
+    if (sel && cv._map) {
+      const m = cv._map, dpr = window.devicePixelRatio || 1, g = cv.getContext('2d');
+      const p = (t) => m.L + (t - m.x0) / (m.x1 - m.x0) * (m.W - m.L - m.R);
+      g.save(); g.scale(dpr, dpr);
+      g.fillStyle = 'rgba(77,163,255,0.22)'; g.strokeStyle = '#4da3ff';
+      const x = Math.min(p(sel.a), p(sel.b)), w = Math.abs(p(sel.b) - p(sel.a));
+      g.fillRect(x, 8, w, cv.clientHeight - 30); g.strokeRect(x, 8, w, cv.clientHeight - 30);
+      g.restore();
+    }
+  };
+  setRange = (a, b) => { view.range = clampRange(a, b); paint(); };
+  const zoomAt = (t, f) => { const [a, b] = view.range; setRange(t - (t - a) * f, t + (b - t) * f); };
+
+  cv.onmousedown = (e) => { if (!view || e.button !== 0) return; sel = { a: tAt(e), b: tAt(e) }; };
+  window.addEventListener('mousemove', (e) => { if (!sel) return; sel.b = tAt(e); paint(); });
+  window.addEventListener('mouseup', () => {
+    if (!sel) return;
+    const { a, b } = sel; sel = null;
+    if (Math.abs(b - a) > (view.range[1] - view.range[0]) * 0.01) setRange(Math.min(a, b), Math.max(a, b)); else paint();
+  });
+  cv.addEventListener('wheel', (e) => {
+    if (!view) return;
+    e.preventDefault();
+    if (e.shiftKey) { const w = view.range[1] - view.range[0], d = (e.deltaY || e.deltaX) / 500 * w; setRange(view.range[0] + d, view.range[1] + d); }
+    else zoomAt(tAt(e), Math.exp(e.deltaY * 0.002));
+  }, { passive: false });
+  cv.ondblclick = () => { setRange(view.full[0], view.full[1]); };
+  $('vZin').onclick = () => view && zoomAt((view.range[0] + view.range[1]) / 2, 0.5);
+  $('vZout').onclick = () => view && zoomAt((view.range[0] + view.range[1]) / 2, 2);
+  $('vReset').onclick = () => view && setRange(view.full[0], view.full[1]);
+
+  // scrollbar: drag the thumb to pan, click the track to jump
+  const pan = (e, grab) => {
+    const r = track.getBoundingClientRect(), w = view.range[1] - view.range[0];
+    const t = view.full[0] + (e.clientX - r.left) / r.width * span();
+    setRange(t - grab * w, t - grab * w + w);
+  };
+  let panning = null;
+  track.onmousedown = (e) => {
+    if (!view) return;
+    const r = track.getBoundingClientRect(), t = view.full[0] + (e.clientX - r.left) / r.width * span();
+    const inside = t >= view.range[0] && t <= view.range[1];
+    panning = inside ? (t - view.range[0]) / (view.range[1] - view.range[0]) : 0.5;
+    pan(e, panning); e.preventDefault();
+  };
+  window.addEventListener('mousemove', (e) => { if (panning != null && view) pan(e, panning); });
+  window.addEventListener('mouseup', () => { panning = null; });
+  window.addEventListener('resize', paint);
 })();
 
 // ---- durability --------------------------------------------------------------------------------

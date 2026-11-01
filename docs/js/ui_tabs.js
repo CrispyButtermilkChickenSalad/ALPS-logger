@@ -38,7 +38,7 @@ export function initTabs({ db, live }) {
       S.cols = await loadColumns(db, id, S.session);
     } catch (e) { setSync(e.message, 'bad'); return recolor(); }
     S.poses = extractPoses(S.cols);
-    setSync((S.cols.fromEnv ? 'using envelope (' + S.cols.n + ' buckets); ' : '') + (S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset'), S.poses.n ? '' : 'bad');
+    setSync((S.cols.fromEnv ? 'using summary trace (' + S.cols.n + ' buckets); ' : '') + (S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset'), S.poses.n ? '' : 'bad');
     if (S.g) await runAuto(true); else recolor();
   };
 

@@ -81,7 +81,7 @@ export function initPa({ db }) {
       const q = readParams();
       const sess = await db.getSession(id);
       const cols = await loadColumns(db, id, sess, { preferRaw: true });
-      if ((sess.capture?.mode ?? 'full') !== 'full') out.textContent = 'note: this session was captured in a triggered/envelope mode, so raw data has gaps; PA analysis needs a full-raw recording';
+      if ((sess.capture?.mode ?? 'full') !== 'full') out.textContent = 'note: this session was captured in a triggered/summary mode, so raw data has gaps; PA analysis needs a full-raw recording';
       // raw counts, so smoothing does not blur the edges
       const t = [], use = [];
       for (let i = 0; i < cols.n; i++) if (Number.isFinite(cols.t[i]) && Number.isFinite(cols.raw[i])) { t.push(cols.t[i]); use.push(cols.raw[i]); }

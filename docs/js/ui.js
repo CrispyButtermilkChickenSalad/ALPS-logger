@@ -240,7 +240,7 @@ async function openSession(id) {
   const { d, env } = await sessionChart(s, 4000);
   renderSummary(id, s, env).catch(() => {});
   if (!d.t.length) { view = null; $('view').style.display = $('viewHint').style.display = 'none'; return loadSessions(); }
-  view = { d, full: [d.t[0], d.t[d.t.length - 1]], range: null, zero: d.t[0] };
+  view = { d, full: [d.t[0], d.t[d.t.length - 1]], range: null, zero: d.t[0], yRange: null, yFull: yExtent(d) };
   view.range = view.full.slice();
   $('view').style.display = $('viewHint').style.display = 'block';
   renderView(); loadSessions();
@@ -285,7 +285,13 @@ async function renderSummary(id, s, env) {
     tr.children[4].append(zoom, ' ', raw); $('evBody').append(tr);
   }
 }
-function renderView() { if (view) { drawChart($('view'), view.d, { xRange: view.range, tZero: view.zero, band: true, threshold: null }); syncBar(); } }
+function yExtent(d) {
+  let lo = Infinity, hi = -Infinity;
+  for (const k of ['lo', 'hi', 'filt']) for (const v of d[k] || []) if (v != null) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (!isFinite(lo)) return [0, 1];
+  const pad = (hi - lo || 1) * 0.08; return [lo - pad, hi + pad];
+}
+function renderView() { if (view) { drawChart($('view'), view.d, { xRange: view.range, yRange: view.yRange, tZero: view.zero, band: true, threshold: null }); syncBar(); } }
 let setRange = () => {}, syncBar = () => {};
 (() => {
   const cv = $('view'), track = $('vTrack'), thumb = $('vThumb'), MIN_SPAN = 0.05;
@@ -298,8 +304,19 @@ let setRange = () => {}, syncBar = () => {};
   };
   const mx = (e) => { const m = cv._map, r = cv.getBoundingClientRect(); return Math.min(Math.max(e.clientX - r.left, m.L), m.W - m.R); };
   const tAt = (e) => { const m = cv._map; return m.x0 + (mx(e) - m.L) / (m.W - m.L - m.R) * (m.x1 - m.x0); };
+  const vy = $('vyTrack'), vyThumb = $('vyThumb'), MIN_Y = 1;
+  const yAt = (e) => { const m = cv._map, r = cv.getBoundingClientRect(), y = Math.min(Math.max(e.clientY - r.top, m.T), m.T + m.sigH); return m.hi - (y - m.T) / m.sigH * (m.hi - m.lo); };
+  const curY = () => view.yRange || [cv._map.lo, cv._map.hi];
+  const clampY = (a, b) => {
+    const [f0, f1] = view.yFull, fs = f1 - f0, w = Math.min(Math.max(b - a, MIN_Y), fs);
+    a = Math.min(Math.max(a, f0), f1 - w);
+    return [a, a + w];
+  };
   syncBar = () => {
     if (!view) return;
+    const [f0, f1] = view.yFull, [ya, yb] = view.yRange || view.yFull, fs = f1 - f0 || 1;
+    vyThumb.style.top = ((f1 - yb) / fs * 100) + '%';
+    vyThumb.style.height = Math.max(1, (yb - ya) / fs * 100) + '%';
     const s = span() || 1, w = view.range[1] - view.range[0];
     thumb.style.left = ((view.range[0] - view.full[0]) / s * 100) + '%';
     thumb.style.width = Math.max(1, w / s * 100) + '%';
@@ -313,30 +330,59 @@ let setRange = () => {}, syncBar = () => {};
       g.save(); g.scale(dpr, dpr);
       g.fillStyle = 'rgba(77,163,255,0.22)'; g.strokeStyle = '#4da3ff';
       const x = Math.min(p(sel.a), p(sel.b)), w = Math.abs(p(sel.b) - p(sel.a));
-      g.fillRect(x, 8, w, cv.clientHeight - 30); g.strokeRect(x, 8, w, cv.clientHeight - 30);
+      const py = (v) => m.T + (m.hi - v) / (m.hi - m.lo) * m.sigH;
+      const y = Math.min(py(sel.ya), py(sel.yb)), h = Math.abs(py(sel.yb) - py(sel.ya));
+      g.fillRect(x, y, w, h); g.strokeRect(x, y, w, h);
       g.restore();
     }
   };
   setRange = (a, b) => { view.range = clampRange(a, b); paint(); };
+  const setY = (a, b) => { view.yRange = clampY(a, b); paint(); };
   const zoomAt = (t, f) => { const [a, b] = view.range; setRange(t - (t - a) * f, t + (b - t) * f); };
+  const zoomYAt = (v, f) => { const [a, b] = curY(); setY(v - (v - a) * f, v + (b - v) * f); };
 
-  cv.onmousedown = (e) => { if (!view || e.button !== 0) return; sel = { a: tAt(e), b: tAt(e) }; };
-  window.addEventListener('mousemove', (e) => { if (!sel) return; sel.b = tAt(e); paint(); });
+  cv.onmousedown = (e) => { if (!view || e.button !== 0) return; sel = { a: tAt(e), b: tAt(e), ya: yAt(e), yb: yAt(e) }; };
+  window.addEventListener('mousemove', (e) => { if (!sel) return; sel.b = tAt(e); sel.yb = yAt(e); paint(); });
   window.addEventListener('mouseup', () => {
     if (!sel) return;
-    const { a, b } = sel; sel = null;
-    if (Math.abs(b - a) > (view.range[1] - view.range[0]) * 0.01) setRange(Math.min(a, b), Math.max(a, b)); else paint();
+    const { a, b, ya, yb } = sel; sel = null;
+    const wide = Math.abs(b - a) > (view.range[1] - view.range[0]) * 0.01;
+    const [c0, c1] = curY(), tall = Math.abs(yb - ya) > (c1 - c0) * 0.02;
+    if (tall) view.yRange = clampY(Math.min(ya, yb), Math.max(ya, yb));
+    if (wide) setRange(Math.min(a, b), Math.max(a, b)); else paint();
   });
   cv.addEventListener('wheel', (e) => {
     if (!view) return;
     e.preventDefault();
-    if (e.shiftKey) { const w = view.range[1] - view.range[0], d = (e.deltaY || e.deltaX) / 500 * w; setRange(view.range[0] + d, view.range[1] + d); }
+    if (e.ctrlKey) zoomYAt(yAt(e), Math.exp(e.deltaY * 0.002));
+    else if (e.altKey) { const [a, b] = curY(), d = (e.deltaY || e.deltaX) / 500 * (b - a); setY(a - d, b - d); }
+    else if (e.shiftKey) { const w = view.range[1] - view.range[0], d = (e.deltaY || e.deltaX) / 500 * w; setRange(view.range[0] + d, view.range[1] + d); }
     else zoomAt(tAt(e), Math.exp(e.deltaY * 0.002));
   }, { passive: false });
-  cv.ondblclick = () => { setRange(view.full[0], view.full[1]); };
+  cv.ondblclick = () => { view.yRange = null; setRange(view.full[0], view.full[1]); };
+  $('vYin').onclick = () => view && (([a, b]) => zoomYAt((a + b) / 2, 0.5))(curY());
+  $('vYout').onclick = () => view && (([a, b]) => zoomYAt((a + b) / 2, 2))(curY());
+  $('vYauto').onclick = () => { if (view) { view.yRange = null; paint(); } };
+
+  // vertical scrollbar for the Y axis
+  const panY = (e, grab) => {
+    const r = vy.getBoundingClientRect(), [f0, f1] = view.yFull, [a, b] = curY(), h = b - a;
+    const top = f1 - (e.clientY - r.top) / r.height * (f1 - f0);
+    setY(top - (1 - grab) * h, top - (1 - grab) * h + h);
+  };
+  let panningY = null;
+  vy.onmousedown = (e) => {
+    if (!view) return;
+    const r = vy.getBoundingClientRect(), [f0, f1] = view.yFull, [a, b] = curY();
+    const v = f1 - (e.clientY - r.top) / r.height * (f1 - f0);
+    panningY = v >= a && v <= b ? (v - a) / (b - a) : 0.5;
+    panY(e, panningY); e.preventDefault();
+  };
+  window.addEventListener('mousemove', (e) => { if (panningY != null && view) panY(e, panningY); });
+  window.addEventListener('mouseup', () => { panningY = null; });
   $('vZin').onclick = () => view && zoomAt((view.range[0] + view.range[1]) / 2, 0.5);
   $('vZout').onclick = () => view && zoomAt((view.range[0] + view.range[1]) / 2, 2);
-  $('vReset').onclick = () => view && setRange(view.full[0], view.full[1]);
+  $('vReset').onclick = () => { if (!view) return; view.yRange = null; setRange(view.full[0], view.full[1]); };
 
   // scrollbar: drag the thumb to pan, click the track to jump
   const pan = (e, grab) => {

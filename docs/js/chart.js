@@ -20,7 +20,9 @@ export function drawChart(canvas, data, o) {
   for (const v of vals) { if (v < lo) lo = v; if (v > hi) hi = v; }
   if (!isFinite(lo)) { lo = 0; hi = 1; }
   const pad = (hi - lo || 1) * 0.08; lo -= pad; hi += pad;
+  if (o.yRange) { lo = o.yRange[0]; hi = o.yRange[1]; }
   const py = (v) => T + sigH - (v - lo) / (hi - lo) * sigH;
+  Object.assign(canvas._map, { T, sigH, lo, hi });
   g.font = '11px monospace'; g.fillStyle = '#8a919c'; g.strokeStyle = '#262b33'; g.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = T + sigH * i / 4; g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke();
@@ -38,6 +40,7 @@ export function drawChart(canvas, data, o) {
     }
     g.stroke();
   };
+  g.save(); g.beginPath(); g.rect(L, T, W - L - R, sigH); g.clip();
   if (o.band) {
     g.fillStyle = 'rgba(255,167,38,0.25)'; g.beginPath(); let started = false;
     for (const i of idx) if (data.hi[i] != null) { const x = px(data.t[i]), y = py(data.hi[i]); started ? g.lineTo(x, y) : g.moveTo(x, y); started = true; }
@@ -48,6 +51,7 @@ export function drawChart(canvas, data, o) {
   if (o.threshold != null) {
     g.setLineDash([6, 4]); g.strokeStyle = '#ff6b6b'; g.beginPath(); g.moveTo(L, py(o.threshold)); g.lineTo(W - R, py(o.threshold)); g.stroke(); g.setLineDash([]);
   }
+  g.restore();
   if (hasZ) {
     let zl = Infinity, zh = -Infinity;
     for (const i of idx) { const v = data.z[i]; if (v != null) { if (v < zl) zl = v; if (v > zh) zh = v; } }

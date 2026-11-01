@@ -63,7 +63,7 @@ export function exportMeta(session, rows, calib, env = []) {
 
 // ---- long-print capture exports (envelope / layers / events) ---------------------------------------
 export const KINDS = {
-  env: { suffix: 'env', head: ['t_s', 'epoch', 'raw_min', 'raw_mean', 'raw_max', 'raw_std', 'filtered_mean', 'z', 'x', 'y', 'n'], absolute: [2, 3, 4, 6], diff: [5] },
+  env: { suffix: 'summary', head: ['t_s', 'epoch', 'raw_min', 'raw_mean', 'raw_max', 'raw_std', 'filtered_mean', 'z', 'x', 'y', 'n'], absolute: [2, 3, 4, 6], diff: [5] },
   layer: { suffix: 'layers', head: ['layer', 't_start_s', 't_end_s', 'epoch_start', 'epoch_end', 'z', 'baseline', 'noise_std', 'raw_min', 'raw_max', 'peak_dev', 'events', 'samples'], absolute: [6, 8, 9], diff: [7, 10] },
   evt: { suffix: 'events', head: ['t_s', 'epoch', 'duration_s', 'triggers', 'peak_dev', 'peak_t_s', 'baseline', 'z', 'x', 'y'], absolute: [6], diff: [4] },
 };

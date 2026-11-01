@@ -25,7 +25,7 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
   serve Moonraker over https, or allow insecure content for the site.
 - **Long prints:** the *Capture for long prints* panel keeps a per-bucket summary trace (min/mean/max/noise) and per-layer statistics, and
   in the default mode only keeps full-rate samples around events. Event triggers (noise band, absolute deviation, slope, layer change,
-  manual marker) can each be toggled. Summary-trace, layer and event data export as `.env.csv`, `.layers.csv`, `.events.csv`.
+  manual marker) can each be toggled. Summary-trace, layer and event data export as `.summary.csv`, `.layers.csv`, `.events.csv`.
 - **Most recent session** and **Saved sessions in folder** sections: the folder list shows CSVs auto-saved to your chosen folder
   (View / Import into browser / open in G-code tab). The G-code and PA tabs can pick sessions from the browser or the folder.
   Folder CSVs hold counts only, and the Moonraker file name isn't stored in them.

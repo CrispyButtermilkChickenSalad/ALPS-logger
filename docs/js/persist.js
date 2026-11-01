@@ -84,7 +84,7 @@ export class MirrorDb {
     if (!this.dir) return [];
     const out = [];
     for await (const [name, h] of this.dir.entries()) {
-      if (h.kind !== 'file' || !/\.csv$/i.test(name) || /\.(env|layers|events)\.csv$/i.test(name)) continue;
+      if (h.kind !== 'file' || !/\.csv$/i.test(name) || /\.(env|summary|layers|events)\.csv$/i.test(name)) continue;
       const f = await h.getFile();
       out.push({ id: 'f:' + name, name: name.replace(/\.csv$/i, ''), file: name, size: f.size, modified: f.lastModified / 1000 });
     }
@@ -118,7 +118,7 @@ export class MirrorDb {
     const p = (this.chains.get(id) || Promise.resolve()).then(fn).catch((e) => { this.onError(e); });
     this.chains.set(id, p); return p;
   }
-  // Raw samples go to <name>.csv; envelope / layers / events go to <name>.env.csv, .layers.csv, .events.csv.
+  // Raw samples go to <name>.csv; summary trace / layers / events go to <name>.summary.csv, .layers.csv, .events.csv.
   async _file(id, kind) {
     const key = `${id}:${kind}`;
     if (this.files.has(key)) return this.files.get(key);

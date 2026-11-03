@@ -1,6 +1,7 @@
 import { Recorder } from './recorder.js';
 import { IdbDb } from './db.js';
 import { SerialSource, SimulatedSource, serialSupported } from './sources.js';
+import { KlipperBridgeSource, KlipperPollSource, defaultBridgeUrl } from './klipper.js';
 import { MoonrakerPoller, mixedContentProblem } from './moonraker.js';
 import { downsample, toCsv, exportMeta, kindToCsv, KINDS, safeName } from './data.js';
 import { loadCalib, isCalibrated, toUnits } from './calib.js';
@@ -35,7 +36,7 @@ function renderLive() {
 function renderStatus() {
   const s = rec.status();
   const dev = $('pDev');
-  dev.textContent = s.connected ? `device: v${s.version}` : `device: ${s.deviceError || 'disconnected'}`;
+  dev.textContent = s.connected ? `device: ${/^\d/.test(s.version) ? 'v' : ''}${s.version}` : `device: ${s.deviceError || 'disconnected'}`;
   dev.className = 'pill ' + (s.connected ? 'ok' : s.deviceError ? 'bad' : '');
   $('pRate').textContent = s.rateHz + ' Hz';
   $('pPrint').textContent = 'print: ' + (s.moonrakerOk === null ? 'no Moonraker' : s.moonrakerOk ? `${s.printState}${s.filename ? ' – ' + s.filename : ''}` : 'Moonraker unreachable');
@@ -47,10 +48,12 @@ function renderStatus() {
   $('btnStart').disabled = s.recording;
   $('btnStop').disabled = !s.recording;
   $('btnMark').disabled = !s.recording;
-  const on = s.connected;
-  $('btnSerial').style.display = on ? 'none' : '';
-  $('btnSim').style.display = on ? 'none' : '';
+  const on = s.connected, kl = $('srcMode').value === 'klipper';
+  $('btnSerial').style.display = on || kl ? 'none' : '';
+  $('btnSim').style.display = on || kl ? 'none' : '';
+  $('btnKl').style.display = on ? 'none' : '';
   $('btnDisc').style.display = on ? '' : 'none';
+  for (const id of ['srcMode', 'klUrl', 'klMode', 'klBridge', 'klCell']) $(id).disabled = on;
   for (const id of ['btnSet', 'btnRead']) $(id).disabled = !on;
   if (s.threshold != null && document.activeElement !== $('thr')) $('thr').value = s.threshold;
   $('log').textContent = rec.messages.slice(-30).join('\n');
@@ -65,15 +68,40 @@ function onChange() {
 // ---- device controls -------------------------------------------------------------
 async function connect(kind) {
   try {
-    source = kind === 'sim' ? new SimulatedSource(rec) : new SerialSource(rec);
+    if (kind === 'klipper') {
+      const url = $('klUrl').value.trim().replace(/\/+$/, ''), cell = $('klCell').value.trim() || 'load_cell_probe';
+      if (!/^https?:\/\//.test(url)) return alert('Enter the Moonraker URL, e.g. http://192.168.1.50');
+      localStorage.setItem('klUrl', url); localStorage.setItem('klCell', cell); localStorage.setItem('klMode', $('klMode').value);
+      localStorage.setItem('klBridge', $('klBridge').value);
+      // The same Moonraker connection also supplies print state and toolhead position.
+      if (!poller || $('mrUrl').value.trim().replace(/\/+$/, '') !== url) {
+        if (poller) { poller.stop(); poller = null; }
+        $('mrUrl').value = url; updateMixedWarning(); toggleMoonraker(true);
+      }
+      source = $('klMode').value === 'poll'
+        ? new KlipperPollSource(rec, { url, cell, apiKey: $('mrKey').value.trim() })
+        : new KlipperBridgeSource(rec, { url: $('klBridge').value.trim() || defaultBridgeUrl(url), cell });
+    } else source = kind === 'sim' ? new SimulatedSource(rec) : new SerialSource(rec);
     await source.connect();
   } catch (e) {
-    if (e.name !== 'NotFoundError') alert(`Connect failed: ${e.message}`);
+    if (e.name !== 'NotFoundError') alert(`Connect failed: ${e.message}${kind === 'klipper' ? '\n\nCheck the URL, that Moonraker lists this page in cors_domains, and (for full rate) that the bridge script is running.' : ''}`);
     if (source) await source.disconnect(e.name === 'NotFoundError' ? null : e.message).catch(() => {});
     source = null;
   }
 }
 $('btnSerial').onclick = () => connect('serial');
+$('btnKl').onclick = () => connect('klipper');
+function applySource() {
+  const k = $('srcMode').value === 'klipper';
+  localStorage.setItem('srcMode', $('srcMode').value);
+  $('klRow').hidden = !k;
+  $('klBridgeLbl').hidden = $('klMode').value === 'poll';
+  for (const el of [$('thr').parentElement, $('btnSet'), $('btnRead')]) el.style.display = k ? 'none' : '';
+  renderStatus();
+}
+$('srcMode').onchange = applySource; $('klMode').onchange = applySource;
+$('klUrl').oninput = () => { if (!$('klBridge').dataset.edited) $('klBridge').value = defaultBridgeUrl($('klUrl').value); };
+$('klBridge').oninput = () => { $('klBridge').dataset.edited = '1'; };
 $('btnSim').onclick = () => connect('sim');
 $('btnDisc').onclick = async () => { if (source) await source.disconnect(); source = null; };
 $('btnStart').onclick = () => { const n = prompt('Session name (optional)'); if (n === null) return; try { rec.startSession(n || undefined); } catch (e) { alert(e.message); } };
@@ -539,6 +567,12 @@ function initCapture() {
   $('mrUrl').value = localStorage.getItem('mrUrl') || '';
   $('mrKey').value = localStorage.getItem('mrKey') || '';
   updateMixedWarning();
+  $('srcMode').value = localStorage.getItem('srcMode') || 'usb';
+  $('klUrl').value = localStorage.getItem('klUrl') || $('mrUrl').value;
+  $('klMode').value = localStorage.getItem('klMode') || 'bridge';
+  $('klCell').value = localStorage.getItem('klCell') || 'load_cell_probe';
+  $('klBridge').value = localStorage.getItem('klBridge') || defaultBridgeUrl($('klUrl').value);
+  applySource();
   if (localStorage.getItem('mrEnabled') === '1' && $('mrUrl').value) toggleMoonraker(true);
   setInterval(renderStatus, 1000);
   setInterval(() => { if (rec.session) loadSessions(); }, 10000);

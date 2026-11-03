@@ -41,8 +41,7 @@ export class Recorder {
   }
 
   // ---- device callbacks
-  onSample(raw, filt) {
-    const t = this.now();
+  onSample(raw, filt, t = this.now()) {
     const row = [t, raw, filt, this.z, this.x, this.y];
     this._recent.push(t);
     if (this._recent.length > 500) this._recent.shift();

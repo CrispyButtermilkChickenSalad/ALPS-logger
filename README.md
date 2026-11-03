@@ -34,6 +34,17 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
 
 For unattended, always-on logging next to the printer, use the Python service below.
 
+## Two data sources
+
+The web app's **Source** selector (Record tab) picks where samples come from:
+
+1. **Direct USB** (default): Web Serial to the ALPS over USB-C, using Mellow's stock firmware.
+2. **Klipper via Moonraker**: for an ALPS flashed as a standalone Klipper MCU (see [autopa ALPS.md](https://github.com/G0BL1N/autopa/blob/main/docs/ALPS.md)). Nothing on Klipper is changed; the app only reads.
+   - **Moonraker only (~5 Hz, calibrated)**: polls Klipper's `load_cell_probe` status. Klipper only reports force once the cell is calibrated (`LOAD_CELL_CALIBRATE`) and tared, and the value is a ~0.5 s mean, so this suits the summary/overview rather than fast PA analysis. Counts are reconstructed as `tare_counts + grams × counts_per_gram`.
+   - **Full rate via bridge**: Moonraker cannot forward Klipper's bulk sample stream, so run `bridge/alps_klipper_bridge.py` on the Klipper host (`python3 alps_klipper_bridge.py`, stdlib only, read-only, defaults: socket `~/printer_data/comms/klippy.sock`, port 7126). The app streams ~488 SPS raw counts from `http://<host>:7126`.
+
+Print state and toolhead position still come from Moonraker, so the G-code sync works as with USB. Notes: Klipper's counts may be scaled differently from Mellow's USB "raw", so recalibrate per source; "filtered" equals raw for Klipper sources; an https page can't reach `http://` Moonraker or the bridge (run the app from `http://localhost`, or allow insecure content); Moonraker must list the page origin in `[authorization] cors_domains`.
+
 ## G-code preview & calibration (web app only)
 
 - **G-code preview tab**: pick a recorded session and a G-code file (upload, or fetch from Moonraker). The toolpath is shown in 3D, each segment coloured by the ALPS counts logged while it was printed (mean / max / min / peak deviation, filtered or raw; layer slider; auto colour range).

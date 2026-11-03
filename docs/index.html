@@ -74,6 +74,16 @@
   <section>
     <h2>Device &amp; live data</h2>
     <div class="row">
+      <label>Source <select id="srcMode"><option value="usb">ALPS over USB (this PC)</option><option value="klipper">Klipper via Moonraker (ALPS on the Klipper host)</option></select></label>
+    </div>
+    <div class="row" id="klRow" hidden>
+      <label>Moonraker URL <input id="klUrl" placeholder="http://192.168.1.50" style="width:210px"></label>
+      <label>Data <select id="klMode"><option value="bridge">Full rate (needs the bridge script)</option><option value="poll">Moonraker only (~5 Hz, calibrated)</option></select></label>
+      <label id="klBridgeLbl">Bridge URL <input id="klBridge" placeholder="http://192.168.1.50:7126" style="width:210px"></label>
+      <label>Load cell <input id="klCell" value="load_cell_probe" style="width:130px"></label>
+      <button id="btnKl" class="primary">Connect Klipper</button>
+    </div>
+    <div class="row" id="usbRow">
       <button id="btnSerial" class="primary">Connect ALPS (USB)</button>
       <button id="btnSim">Simulator</button>
       <button id="btnDisc" style="display:none">Disconnect</button>

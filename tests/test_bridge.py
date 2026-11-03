@@ -21,7 +21,7 @@ def fake_klipper(srv, ready):
     req = json.loads(buf.split(bridge.ETX)[0])
     assert req["method"] == "load_cell/dump_force" and req["params"]["load_cell"] == "load_cell_probe"
     conn.sendall(json.dumps({"id": 1, "result": {"header": ["time", "force (g)", "counts", "tare_counts"]}}).encode() + bridge.ETX)
-    t = time.monotonic()
+    t = 1973.4
     data = {"params": {"data": [[t, None, 1234, None], [t + 0.002, 1.5, 1240, 1000]], "errors": [0, 0], "overflows": 0}}
     for _ in range(50):
         conn.sendall(json.dumps(data).encode() + bridge.ETX)
@@ -50,7 +50,7 @@ def test_bridge_streams_ndjson_with_epoch_times():
         m = json.loads(line)
         assert abs(m["now"] - time.time()) < 5
         assert [row[1] for row in m["rows"]] == [1234, 1240]
-        assert abs(m["rows"][0][0] - time.time()) < 5
+        assert abs(m["rows"][1][0] - time.time()) < 5 and abs(m["rows"][1][0] - m["rows"][0][0] - 0.002) < 1e-4
         assert m["rows"][1][2] == 1.5
         c.close()
         c2 = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=5)

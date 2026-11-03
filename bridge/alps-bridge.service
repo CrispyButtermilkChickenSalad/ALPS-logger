@@ -1,0 +1,13 @@
+[Unit]
+Description=ALPS Klipper raw stream bridge (read-only)
+After=klipper.service
+
+[Service]
+Type=simple
+User=fly
+ExecStart=/usr/bin/python3 /home/fly/alps_klipper_bridge.py --socket /home/fly/printer_data/comms/klippy.sock
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

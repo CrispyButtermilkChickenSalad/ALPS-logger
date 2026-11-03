@@ -27,11 +27,6 @@ from urllib.parse import parse_qs, urlparse
 ETX = b"\x03"
 
 
-def klipper_to_epoch_offset():
-    # Klipper stamps samples with the host's monotonic clock.
-    return time.time() - time.monotonic()
-
-
 class Hub:
     """Keeps one Klipper subscription per load cell and fans batches out to HTTP clients."""
 
@@ -87,7 +82,7 @@ class Hub:
         req = {"id": 1, "method": "load_cell/dump_force", "params": {"load_cell": cell, "response_template": {}}}
         s.sendall(json.dumps(req).encode() + ETX)
         buf = b""
-        offset = klipper_to_epoch_offset()
+        offset = None
         while True:
             chunk = s.recv(65536)
             if not chunk:
@@ -104,12 +99,12 @@ class Hub:
                 if not p or "data" not in p:
                     continue
                 now = time.time()
-                rows = []
-                for t, grams, counts, _tare in p["data"]:
-                    ep = t + offset
-                    if abs(ep - now) > 30:  # unexpected time base: fall back to arrival time
-                        ep = now
-                    rows.append([round(ep, 6), counts, grams])
+                if not p["data"]:
+                    continue
+                # Sample times are on Klipper's own clock; anchor it to arrival time with a smoothed offset.
+                est = now - p["data"][-1][0]
+                offset = est if offset is None or abs(est - offset) > 1.0 else offset + 0.02 * (est - offset)
+                rows = [[round(t + offset, 6), counts, grams] for t, grams, counts, _tare in p["data"]]
                 self.samples += len(rows)
                 errs = p.get("errors")
                 self._publish(cell, {"now": now, "rows": rows, "errors": sum(errs) if isinstance(errs, list) else errs})

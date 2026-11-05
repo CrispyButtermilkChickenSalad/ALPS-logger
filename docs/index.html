@@ -220,6 +220,12 @@
         <button id="gManual">Apply manual</button>
         <span id="gSync" class="pill">not synced</span>
       </div>
+      <div class="row">
+        <label style="flex:1">Shift log <input id="gOffR" type="range" min="-600" max="600" step="0.1" value="0" style="width:70%;vertical-align:middle"> <span id="gOffTxt" class="pill">0.0 s</span></label>
+        <label style="flex:1">Scale log <input id="gScaleR" type="range" min="0.8" max="1.2" step="0.001" value="1" style="width:70%;vertical-align:middle"> <span id="gScaleTxt" class="pill">1.000x</span></label>
+      </div>
+      <canvas id="gFit" style="width:100%;height:150px;cursor:ew-resize"></canvas>
+      <p class="hint">Blue = pressure log, orange band = where the G-code (and its layer starts) lands on the log. Drag the sliders or drag the graph sideways to shift, then scale until layer starts line up with the features in the trace. The 3D view updates as you adjust.</p>
       <p class="hint">Auto-fit matches the toolhead positions logged from Moonraker to the G-code path (needs Moonraker enabled while recording). Without positions, set the offset (seconds from session start to G-code start) and a time scale by hand. Slicer time estimates are approximate; start/pause macros not in the file shift the offset.</p>
     </section>
     <section>

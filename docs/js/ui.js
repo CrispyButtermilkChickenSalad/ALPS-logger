@@ -491,7 +491,7 @@ async function initDurability() {
   $('durState').className = 'pill' + (p.persisted ? '' : ' bad');
 
   const setFolder = (h) => { db.setFolder(h); $('folderState').textContent = h ? 'saving to folder: ' + h.name : 'no folder'; $('folderState').className = 'pill'; $('btnFolderGrant').hidden = true; loadFolder().catch(() => {}); };
-  if (!window.showDirectoryPicker) { $('btnFolder').disabled = true; $('folderState').textContent = 'folder auto-save needs Chrome/Edge'; }
+  if (!window.showDirectoryPicker) { $('btnFolder').disabled = true; $('folderState').textContent = 'folder auto-save needs Chrome/Edge – use auto-backup instead'; }
   else {
     try {
       const h = await loadFolderHandle();
@@ -506,15 +506,36 @@ async function initDurability() {
     };
   }
 
-  $('btnBackup').onclick = async () => {
+  const downloadBackup = async (auto) => {
     try {
       const blob = await exportBackup(db);
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-      a.download = `alps_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+      const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
+      a.download = `alps_backup_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}${auto ? `_${p2(d.getHours())}${p2(d.getMinutes())}` : ''}.json`;
+      document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      $('backupState').textContent = 'backup downloaded';
+      $('backupState').textContent = (auto ? 'auto-backup downloaded ' + d.toLocaleTimeString() : 'backup downloaded');
     } catch (e) { $('backupState').textContent = e.message; }
   };
+  $('btnBackup').onclick = () => downloadBackup(false);
+
+  // Firefox (and other browsers without a folder picker): periodically download a backup file into the
+  // browser's download folder, and again whenever a recording ends.
+  const AUTO_KEY = 'alpsAutoBackup';
+  let autoTimer = null;
+  let dirty = false;
+  const addSamples = db.addSamples.bind(db);
+  db.addSamples = (...a) => { dirty = true; return addSamples(...a); };
+  const setAuto = (on) => {
+    localStorage.setItem(AUTO_KEY, on ? '1' : '0');
+    clearInterval(autoTimer); autoTimer = null;
+    if (on) autoTimer = setInterval(() => { if (dirty) { dirty = false; downloadBackup(true); } }, 15 * 60e3);
+  };
+  const endSession = db.endSession.bind(db);
+  db.endSession = async (...a) => { const r = await endSession(...a); if (localStorage.getItem(AUTO_KEY) === '1') { dirty = false; downloadBackup(true); } return r; };
+  $('autoBackup').checked = localStorage.getItem(AUTO_KEY) === '1';
+  setAuto($('autoBackup').checked);
+  $('autoBackup').onchange = () => setAuto($('autoBackup').checked);
   $('btnRestore').onclick = () => $('fileRestore').click();
   $('fileRestore').onchange = async () => {
     const f = $('fileRestore').files[0]; $('fileRestore').value = '';

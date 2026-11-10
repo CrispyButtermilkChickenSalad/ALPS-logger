@@ -249,6 +249,33 @@
       <p class="hint">White dot = estimated commanded XYZ, not measured toolhead pose. Direction describes the current path segment, not force. Rotation, tool geometry and actual nozzle orientation are unknown; G-code comments are not motion commands.</p>
       <p class="hint">Drag to rotate, Shift/right-drag to pan, wheel to zoom, double-click to reset. Grey = unavailable ALPS data for that segment. Colours show values relative to the tare in the units set on the Calibration tab. Summary buckets blur short moves; raw extrema cover whole overlapping buckets, while filtered extrema are extrema of bucket means, not individual samples.</p>
     </section>
+    <section>
+      <h2>Hypothetical tilt and load model</h2>
+      <p class="hint">An educational side-view thought experiment, not a reconstruction of this print. All values below are invented examples until measured. The angle is manually assumed and does not follow G-code or Moonraker. The tool axis and sensor are assumed rigidly aligned; the blue sensor, tip and bed are schematic, not measured geometry.</p>
+      <div class="row">
+        <label>Assumed tilt toward +Y (degrees) <input id="simAngle" type="number" step="1" value="5"></label>
+        <label>Tip-to-sensor lever (mm) <input id="simLever" type="number" min="0" step="1" value="30"></label>
+        <label>Assumed force Y (N) <input id="simFy" type="number" step="0.1" value="0.2"></label>
+        <label>Assumed force Z (N) <input id="simFz" type="number" step="0.1" value="1"></label>
+      </div>
+      <div class="row">
+        <label>Axial sensitivity (counts/N) <input id="simAxial" type="number" step="any" value="1000"></label>
+        <label>Lateral sensitivity (counts/N) <input id="simLateral" type="number" step="any" value="200"></label>
+        <label>Moment sensitivity (counts/N·mm) <input id="simMoment" type="number" step="any" value="10"></label>
+      </div>
+      <canvas id="simView" style="width:100%;height:220px"></canvas>
+      <p id="simResult" class="hint" aria-live="polite"></p>
+      <p id="simAlternative" class="hint"></p>
+      <p id="simPath" class="hint">Selected path: no G-code loaded. The scenario inputs are independent of the path.</p>
+      <p class="hint">Hypothetical counts versus angle for the same entered force and gains (not a time plot or measured curve). White dot marks the assumed angle when within the plotted range.</p>
+      <canvas id="simSweep" style="width:100%;height:160px"></canvas>
+      <p class="hint">Forces are hypothetical forces on the tip in the fixed Y-Z plane. The model projects them onto the assumed tool axis and lateral axis, adds the moment about the sensor due to the chosen lever, and applies the entered sensitivities. The yellow arrow shows direction only. The model output is tare-free example counts; it is not the measured trace, a calibrated force, or contact pressure. It does not model friction, thermal drift, inertia, extrusion, contact area, other axes or nozzle collision. The alternative force may not be physically possible at a particular contact.</p>
+      <details>
+        <summary>How to characterize a real assembly</summary>
+        <p>First record unloaded baselines at each independently verified angle and operating temperature, including cable and fan conditions. With a safe independent force reference and a known contact point, measure repeated loading and unloading at several force levels and opposing directions; repeat at positive and negative angles. Compare drift, repeatability, hysteresis and held-out measurements before considering a calibration. Repeat at different lever arms or use independent moment measurements to distinguish lateral sensitivity from bending-moment sensitivity. A single fixed-lever experiment can identify only their combined effect.</p>
+        <p>Compare in-air motion and extrusion with contact tests to identify confounding effects, and mark heating failures, pauses or invalid print regions separately. An assumed or commanded angle, a single scalar trace, and an endpoint fit do not establish the executed tilt, contact force or contact area. Do not use this illustration to control the printer.</p>
+      </details>
+    </section>
   </div>
   <div id="tab-calib" class="tab" hidden>
     <section>

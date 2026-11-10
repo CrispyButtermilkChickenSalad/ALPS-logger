@@ -5,6 +5,7 @@ import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB } from './calib.js';
+import { simulateTilt, drawTilt, drawAngleSweep } from './tilt_sim.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3)) : '–');
@@ -21,7 +22,7 @@ export function initTabs({ db, live }) {
     if (name === 'live' || name === 'sessions') window.dispatchEvent(new Event('resize'));
     if (name === 'pa') { if (!pa) pa = initPa({ db }); pa.refresh(); }
     if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); updatePosition(); } refreshSessions(); viewer.redraw(); }
-    if (name === 'gcode') drawFit();
+    if (name === 'gcode') { drawFit(); updateTilt(); }
   };
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
 
@@ -173,7 +174,7 @@ export function initTabs({ db, live }) {
     $('gOff').value = (drag.off + dt).toFixed(1); applyFit(true);
   };
   $('gFit').onpointerup = $('gFit').onpointercancel = () => { drag = null; };
-  window.addEventListener('resize', drawFit);
+  window.addEventListener('resize', () => { drawFit(); updateTilt(); });
 
   function recolor() {
     drawFit();
@@ -208,7 +209,7 @@ export function initTabs({ db, live }) {
   }
   function updatePosition() {
     const motion = S.g && motionAt(S.g, S.g.totalTime * (+$('gTime').value / 1000));
-    if (!motion) { $('gPosition').textContent = 'no path loaded'; if (viewer) viewer.setCursor(null); return; }
+    if (!motion) { $('gPosition').textContent = 'no path loaded'; $('simPath').textContent = 'Selected path: no G-code loaded. The scenario inputs are independent of the path.'; if (viewer) viewer.setCursor(null); return; }
     const time = S.g.totalTime * (+$('gTime').value / 1000);
     const direction = motion.direction ? motion.direction.map((v) => v.toFixed(2)).join(', ') : 'stationary';
     let reading = '';
@@ -217,9 +218,33 @@ export function initTabs({ db, live }) {
       reading = ` · session ${S.map.toSession(time).toFixed(1)} s · segment mean ${Number.isFinite(v) ? fmtV(toUnits(v, calib, S.autoTare)) + ' ' + unitLabel(calib) : 'unavailable'}`;
     }
     $('gPosition').textContent = `estimated ${time.toFixed(1)} s · XYZ ${motion.xyz.map((v) => v.toFixed(2)).join(', ')} mm · direction ${direction} · ${motion.extruding ? 'extruding' : 'travel/dwell'}${reading} · tilt unknown`;
+    $('simPath').textContent = `Selected path: ${$('gPosition').textContent}. The scenario inputs are independent of this path and reading.`;
     if (viewer) viewer.setCursor(motion.xyz);
   }
   $('gTime').oninput = updatePosition;
+  const simInputs = ['simAngle', 'simLever', 'simFy', 'simFz', 'simAxial', 'simLateral', 'simMoment'];
+  function updateTilt() {
+    const values = simInputs.map((id) => $(id).value === '' ? NaN : Number($(id).value));
+    const [angle, lever, forceY, forceZ, axialGain, lateralGain, momentGain] = values;
+    try {
+      const input = { angle, lever, forceY, forceZ, axialGain, lateralGain, momentGain };
+      const model = simulateTilt(input);
+      $('simResult').textContent = `Example: axial ${fmtV(model.axial)} N, lateral ${fmtV(model.lateral)} N, moment ${fmtV(model.moment)} N·mm; predicted change ${fmtV(model.counts)} counts (not a measurement).`;
+      $('simAlternative').textContent = model.alternative
+        ? `A different hypothetical force, Y ${fmtV(model.alternative.forceY)} N and Z ${fmtV(model.alternative.forceZ)} N, gives the same modeled reading. One scalar cannot determine both components; this alternative is not inferred from the print.`
+        : 'The chosen sensitivities yield zero response to every modeled Y-Z force; the force is unobservable in this example.';
+      if (!$('tab-gcode').hidden) { drawTilt($('simView'), input); drawAngleSweep($('simSweep'), input); }
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      $('simResult').textContent = e.message;
+      $('simAlternative').textContent = '';
+      for (const id of ['simView', 'simSweep']) {
+        const canvas = $(id), ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+  }
+  for (const id of simInputs) $(id).oninput = updateTilt;
   for (const id of ['gMetric', 'gSignal', 'gLo', 'gHi']) $(id).onchange = recolor;
   $('gTravel').onchange = () => { if (viewer) { viewer.showTravel = $('gTravel').checked; viewer.redraw(); } };
   document.querySelectorAll('button[data-view]').forEach((b) => (b.onclick = () => viewer && viewer.preset(b.dataset.view)));

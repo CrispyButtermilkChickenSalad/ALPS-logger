@@ -91,6 +91,16 @@ test('motion cursor reports commanded direction, not orientation', () => {
   assert.equal(motionAt(parseGcode(''), 0), null);
 });
 
+test('commanded A words are tracked per segment without claiming measured tilt', () => {
+  const g = parseGcode('G1 X10 F600\nG1 A5 F6000\nG1 X20 A5 F600\nG92 A0\nG1 X30');
+  assert.equal(motionAt(g, 0).a, 0);
+  const mid = motionAt(g, g.t0[2] + g.dur[2] / 2);
+  assert.equal(mid.a, 5);
+  assert.equal(g.a1[1], 5);
+  assert.ok(g.dur[1] > 0, 'A-only move adds estimated time');
+  assert.equal(motionAt(g, g.totalTime).a, 0);
+});
+
 test('summary aggregation uses bucket intervals and leaves gaps uncoloured', async () => {
   const db = new MemoryDb();
   const session = { started: 100, ended: 104, capture: { mode: 'events', bucketS: 1 } };

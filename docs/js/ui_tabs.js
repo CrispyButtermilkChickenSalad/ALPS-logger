@@ -5,7 +5,7 @@ import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB } from './calib.js';
-import { simulateTilt, drawTilt, drawAngleSweep } from './tilt_sim.js';
+import { simulateTilt, drawTilt, drawAngleSweep, nozzleGeometry, drawNozzleGeometry } from './tilt_sim.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3)) : '–');
@@ -22,7 +22,7 @@ export function initTabs({ db, live }) {
     if (name === 'live' || name === 'sessions') window.dispatchEvent(new Event('resize'));
     if (name === 'pa') { if (!pa) pa = initPa({ db }); pa.refresh(); }
     if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); updatePosition(); } refreshSessions(); viewer.redraw(); }
-    if (name === 'gcode') { drawFit(); updateTilt(); }
+    if (name === 'gcode') { drawFit(); updateTilt(); updateGeometry(); }
   };
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
 
@@ -174,7 +174,7 @@ export function initTabs({ db, live }) {
     $('gOff').value = (drag.off + dt).toFixed(1); applyFit(true);
   };
   $('gFit').onpointerup = $('gFit').onpointercancel = () => { drag = null; };
-  window.addEventListener('resize', () => { drawFit(); updateTilt(); });
+  window.addEventListener('resize', () => { drawFit(); updateTilt(); updateGeometry(); });
 
   function recolor() {
     drawFit();
@@ -207,9 +207,11 @@ export function initTabs({ db, live }) {
     $('gCoverage').textContent = `${available}/${total} extrusion segments have data (${S.cols.fromEnv ? 'summary buckets' : 'raw samples'}); grey indicates unavailable data${S.cols.fromEnv && !S.cols.bucketS ? '; bucket width unknown' : ''}`;
     updatePosition();
   }
+  let commandedA = null;
+  $('simUseA').onclick = () => { if (commandedA === null) return; $('simAngle').value = String(+commandedA.toFixed(3)); updateTilt(); updateGeometry(); };
   function updatePosition() {
     const motion = S.g && motionAt(S.g, S.g.totalTime * (+$('gTime').value / 1000));
-    if (!motion) { $('gPosition').textContent = 'no path loaded'; $('simPath').textContent = 'Selected path: no G-code loaded. The scenario inputs are independent of the path.'; if (viewer) viewer.setCursor(null); return; }
+    if (!motion) { commandedA = null; $('simUseA').disabled = true; $('gPosition').textContent = 'no path loaded'; $('simPath').textContent = 'Selected path: no G-code loaded. The scenario inputs are independent of the path.'; if (viewer) viewer.setCursor(null); return; }
     const time = S.g.totalTime * (+$('gTime').value / 1000);
     const direction = motion.direction ? motion.direction.map((v) => v.toFixed(2)).join(', ') : 'stationary';
     let reading = '';
@@ -217,7 +219,8 @@ export function initTabs({ db, live }) {
       const v = S.agg.mean[motion.index];
       reading = ` · session ${S.map.toSession(time).toFixed(1)} s · segment mean ${Number.isFinite(v) ? fmtV(toUnits(v, calib, S.autoTare)) + ' ' + unitLabel(calib) : 'unavailable'}`;
     }
-    $('gPosition').textContent = `estimated ${time.toFixed(1)} s · XYZ ${motion.xyz.map((v) => v.toFixed(2)).join(', ')} mm · direction ${direction} · ${motion.extruding ? 'extruding' : 'travel/dwell'}${reading} · tilt unknown`;
+    $('gPosition').textContent = `estimated ${time.toFixed(1)} s · XYZ ${motion.xyz.map((v) => v.toFixed(2)).join(', ')} mm · direction ${direction} · ${motion.extruding ? 'extruding' : 'travel/dwell'}${reading} · commanded A ${motion.a.toFixed(2)}° (G-code word; not a measured angle, sign/axis mapping unverified)`;
+    $('simUseA').disabled = false; commandedA = motion.a;
     $('simPath').textContent = `Selected path: ${$('gPosition').textContent}. The scenario inputs are independent of this path and reading.`;
     if (viewer) viewer.setCursor(motion.xyz);
   }
@@ -245,6 +248,22 @@ export function initTabs({ db, live }) {
     }
   }
   for (const id of simInputs) $(id).oninput = updateTilt;
+  function updateGeometry() {
+    const read = (id) => $(id).value === '' ? NaN : Number($(id).value);
+    try {
+      const input = { angle: read('simAngle'), diameter: read('simDiameter'), centerGap: read('simGap') };
+      const g = nozzleGeometry(input);
+      $('simGeometryResult').textContent = `Assumed face: −Y edge ${g.minusY.toFixed(4)} mm; +Y edge ${g.plusY.toFixed(4)} mm; gap difference ${g.difference.toFixed(4)} mm.${g.minimum < 0 ? ' Idealized face intersects the plane; this is not a collision check.' : ''}`;
+      if (!$('tab-gcode').hidden) drawNozzleGeometry($('simGeometry'), input, g);
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      $('simGeometryResult').textContent = e.message;
+      const canvas = $('simGeometry');
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+  $('simAngle').oninput = () => { updateTilt(); updateGeometry(); };
+  $('simDiameter').oninput = $('simGap').oninput = updateGeometry;
   for (const id of ['gMetric', 'gSignal', 'gLo', 'gHi']) $(id).onchange = recolor;
   $('gTravel').onchange = () => { if (viewer) { viewer.showTravel = $('gTravel').checked; viewer.redraw(); } };
   document.querySelectorAll('button[data-view]').forEach((b) => (b.onclick = () => viewer && viewer.preset(b.dataset.view)));

@@ -17,22 +17,26 @@ export function parseGcode(text, opts = {}) {
   const o = { accel: 3000, scv: 5, defaultSpeed: 50, arcStep: 0.5, ...opts };
   const sx = new Grow(Float32Array), sy = new Grow(Float32Array), sz = new Grow(Float32Array);
   const ex = new Grow(Float32Array), ey = new Grow(Float32Array), ez = new Grow(Float32Array);
+  const sa = new Grow(Float32Array), ea = new Grow(Float32Array);
   const fl = new Grow(Uint8Array), vc = new Grow(Float32Array), ac = new Grow(Float32Array), fx = new Grow(Float32Array);
-  let px = 0, py = 0, pz = 0, pe = 0, abs = true, eAbs = true, f = o.defaultSpeed * 60, accel = o.accel, spd = 1;
+  let pa = 0, na = 0, px = 0, py = 0, pz = 0, pe = 0, abs = true, eAbs = true, f = o.defaultSpeed * 60, accel = o.accel, spd = 1;
 
   const push = (x0, y0, z0, x1, y1, z1, flag, v, fixed) => {
     sx.push(x0); sy.push(y0); sz.push(z0); ex.push(x1); ey.push(y1); ez.push(z1);
     fl.push(flag); vc.push(v); ac.push(accel); fx.push(fixed);
+    sa.push(pa); ea.push(na);
   };
   const move = (nx, ny, nz, de) => {
     const L = Math.hypot(nx - px, ny - py, nz - pz);
     const v = Math.max(1, (f / 60) * spd);
+    const dA = Math.abs(na - pa);
     if (L < 1e-9) {
-      if (Math.abs(de) > 1e-9) push(px, py, pz, px, py, pz, NOGEOM, v, Math.abs(de) / v);
+      // A-only move time assumes F is a rotary speed in deg/min; this is an estimate, not firmware kinematics.
+      if (Math.abs(de) > 1e-9 || dA > 1e-9) push(px, py, pz, px, py, pz, NOGEOM, v, Math.max(Math.abs(de), dA) / v);
     } else {
       push(px, py, pz, nx, ny, nz, de > 1e-9 ? EXTRUDE : 0, v, 0);
     }
-    px = nx; py = ny; pz = nz;
+    px = nx; py = ny; pz = nz; pa = na;
   };
 
   const re = /([A-Za-z])\s*([-+]?(?:\d+\.?\d*|\.\d+))/g;
@@ -62,6 +66,7 @@ export function parseGcode(text, opts = {}) {
         let de = 0;
         if (w.E !== undefined) { de = eAbs ? w.E - pe : w.E; pe = eAbs ? w.E : pe + w.E; }
         if (w.F !== undefined) f = w.F;
+        if (w.A !== undefined) na = abs ? w.A : pa + w.A;
         if ((code === 'G2' || code === 'G3') && (w.I !== undefined || w.J !== undefined)) {
           const cx = px + (w.I || 0), cy = py + (w.J || 0);
           const r = Math.hypot(px - cx, py - cy);
@@ -94,6 +99,7 @@ export function parseGcode(text, opts = {}) {
       case 'G90': abs = true; break;
       case 'G91': abs = false; break;
       case 'G92':
+        if (w.A !== undefined) { pa = na = w.A; }
         if (w.X !== undefined) px = w.X;
         if (w.Y !== undefined) py = w.Y;
         if (w.Z !== undefined) pz = w.Z;
@@ -110,7 +116,7 @@ export function parseGcode(text, opts = {}) {
   const g = {
     n: sx.n,
     x0: sx.done(), y0: sy.done(), z0: sz.done(), x1: ex.done(), y1: ey.done(), z1: ez.done(),
-    flags: fl.done(), vc: vc.done(), accel: ac.done(), fixed: fx.done(),
+    flags: fl.done(), vc: vc.done(), accel: ac.done(),     fixed: fx.done(), a0: sa.done(), a1: ea.done(),
   };
   planTimes(g, o);
   findLayers(g);
@@ -232,5 +238,7 @@ export function motionAt(g, tg) {
   const i = lo, xyz = posAt(g, time, [0, 0, 0]);
   const delta = [g.x1[i] - g.x0[i], g.y1[i] - g.y0[i], g.z1[i] - g.z0[i]];
   const length = Math.hypot(...delta);
-  return { index: i, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
+  const span = g.dur[i] > 0 ? Math.min(1, Math.max(0, (time - g.t0[i]) / g.dur[i])) : 1;
+  const a = g.a0[i] + (g.a1[i] - g.a0[i]) * span;
+  return { index: i, a, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
 }

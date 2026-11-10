@@ -21,20 +21,35 @@ export class TimeMap {
   toGcode(ts) { return TimeMap._interp(this.s, this.g, ts); }
 }
 
+// Session boundaries are recording boundaries, not necessarily actual print boundaries.
+export function endpointSync(g, session) {
+  const duration = session?.ended - session?.started;
+  if (!Number.isFinite(session?.started) || !Number.isFinite(session?.ended) ||
+      !(duration > 0) || !Number.isFinite(g?.totalTime) || !(g.totalTime > 0)) return null;
+  return TimeMap.linear(0, duration / g.totalTime, g.totalTime);
+}
+
 // ---- session columns ------------------------------------------------------------------------
 // Rows are [t, raw, filt, z, x, y]; returns typed columns with t relative to session start (NaN = missing).
 // Sessions captured as 'events' or 'envelope' only have gaps in the raw rows, so they are loaded from the
 // envelope instead (raw = bucket mean, filt = bucket filtered mean); `fromEnv` is set on the result.
 export async function loadColumns(db, id, session, { preferRaw = false } = {}) {
-  if (!preferRaw && (session.capture?.mode ?? 'full') !== 'full' && typeof db.getSamples === 'function') {
+  const loadEnvelope = async () => {
+    if (typeof db.getSamples !== 'function') return null;
     const env = await db.getSamples(id, 'env');
     if (env.length) {
       const n = env.length, t = new Float64Array(n), raw = new Float32Array(n), filt = new Float32Array(n);
+      const rawMin = new Float32Array(n), rawMax = new Float32Array(n);
       const x = new Float32Array(n), y = new Float32Array(n), z = new Float32Array(n);
       const nz = (v) => (v == null ? NaN : v);
-      env.forEach((r, i) => { t[i] = r[0] - session.started; raw[i] = nz(r[2]); filt[i] = nz(r[5]); z[i] = nz(r[6]); x[i] = nz(r[7]); y[i] = nz(r[8]); });
-      return { n, t, raw, filt, x, y, z, fromEnv: true };
+      env.forEach((r, i) => { t[i] = r[0] - session.started; rawMin[i] = nz(r[1]); raw[i] = nz(r[2]); rawMax[i] = nz(r[3]); filt[i] = nz(r[5]); z[i] = nz(r[6]); x[i] = nz(r[7]); y[i] = nz(r[8]); });
+      return { n, t, raw, filt, rawMin, rawMax, x, y, z, fromEnv: true, bucketS: session.capture?.bucketS > 0 ? session.capture.bucketS : null };
     }
+    return null;
+  };
+  if (!preferRaw && (session.capture?.mode ?? 'full') !== 'full') {
+    const env = await loadEnvelope();
+    if (env) return env;
   }
   let cap = Math.max(1024, (session.n || 0) + 1024), n = 0;
   let t = new Float64Array(cap);
@@ -53,7 +68,17 @@ export async function loadColumns(db, id, session, { preferRaw = false } = {}) {
       n++;
     }
   });
-  return { n, t: t.subarray(0, n), raw: c.raw.subarray(0, n), filt: c.filt.subarray(0, n), x: c.x.subarray(0, n), y: c.y.subarray(0, n), z: c.z.subarray(0, n) };
+  const cols = { n, t: t.subarray(0, n), raw: c.raw.subarray(0, n), filt: c.filt.subarray(0, n), x: c.x.subarray(0, n), y: c.y.subarray(0, n), z: c.z.subarray(0, n) };
+  if (!preferRaw) {
+    const duration = session.ended - session.started;
+    let incomplete = !n || (Number.isFinite(duration) && (t[0] > 1 || t[n - 1] < duration - 1));
+    for (let i = 1; i < n && !incomplete; i++) incomplete = t[i] - t[i - 1] > 1;
+    if (incomplete) {
+      const env = await loadEnvelope();
+      if (env) return env;
+    }
+  }
+  return cols;
 }
 
 // Distinct toolhead poses (rows where x/y/z changed) – these come from the Moonraker poll.
@@ -194,22 +219,41 @@ export function aggregate(g, map, cols, signal = 'filt') {
   for (let i = 0; i < n; i++) {
     if (g.flags[i] & 4) continue;
     const s0 = map.toSession(g.t0[i]), s1 = map.toSession(g.t0[i] + g.dur[i]);
-    while (j < m && T[j] < s0) j++;
+    const width = cols.fromEnv ? cols.bucketS : 0;
+    if (cols.fromEnv && !(width > 0)) continue;
+    if (!cols.fromEnv && (s0 < T[0] - 1e-6 || s1 > T[m - 1] + 1e-6)) continue;
+    while (j < m && (cols.fromEnv ? T[j] + width <= s0 : T[j] < s0)) j++;
     let sum = 0, c = 0, mn = Infinity, mx = -Infinity;
+    let gap = !cols.fromEnv && j > 0 && j < m && T[j] - T[j - 1] > 1;
     for (let k = j; k < m && T[k] < s1; k++) {
+      if (!cols.fromEnv && k > 0 && T[k] - T[k - 1] > 1) gap = true;
       const v = V[k];
-      if (Number.isNaN(v)) continue;
-      sum += v; c++;
-      if (v < mn) mn = v;
-      if (v > mx) mx = v;
+      if (!Number.isFinite(v)) continue;
+      const weight = cols.fromEnv ? Math.max(0, Math.min(s1, T[k] + width) - Math.max(s0, T[k])) : 1;
+      if (!weight) continue;
+      sum += v * weight; c += weight;
+      const vmin = cols.fromEnv && signal === 'raw' ? cols.rawMin[k] : v;
+      const vmax = cols.fromEnv && signal === 'raw' ? cols.rawMax[k] : v;
+      if (Number.isFinite(vmin) && vmin < mn) mn = vmin;
+      if (Number.isFinite(vmax) && vmax > mx) mx = vmax;
     }
-    if (!c) {
+    if (!cols.fromEnv && j < m && T[j] < s1) {
+      let end = j;
+      while (end < m && T[end] < s1) end++;
+      if (end < m && end > 0 && T[end] - T[end - 1] > 1) gap = true;
+    }
+    if (gap) continue;
+    if (!c && !cols.fromEnv) {
       const mid = (s0 + s1) / 2;
+      if (mid < T[0] || mid > T[m - 1]) continue;
       let k = j < m && (j === 0 || Math.abs(T[j] - mid) < Math.abs(T[j - 1] - mid)) ? j : j - 1;
+      if (j > 0 && j < m && T[j] - T[j - 1] > 1) continue;
       if (k < 0 || k >= m || Math.abs(T[k] - mid) > 0.5 || Number.isNaN(V[k])) continue;
       sum = V[k]; c = 1; mn = mx = V[k];
     }
-    mean[i] = sum / c; lo[i] = mn; hi[i] = mx;
+    // Do not paint a whole move from a partially covered summary interval.
+    if (cols.fromEnv && c < (s1 - s0) - 0.001) continue;
+    if (c) { mean[i] = sum / c; lo[i] = Number.isFinite(mn) ? mn : NaN; hi[i] = Number.isFinite(mx) ? mx : NaN; }
   }
   return { mean, min: lo, max: hi };
 }

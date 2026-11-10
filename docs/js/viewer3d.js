@@ -28,7 +28,7 @@ export function toBins(values, lo, hi) {
 
 export class Viewer {
   constructor(canvas) {
-    this.cv = canvas; this.g = null; this.bins = null;
+    this.cv = canvas; this.g = null; this.bins = null; this.cursor = null;
     this.yaw = -0.6; this.pitch = 0.6; this.zoom = 1; this.pan = [0, 0];
     this.layerMax = Infinity; this.showTravel = false; this.dragging = false;
     this._raf = 0;
@@ -49,6 +49,7 @@ export class Viewer {
   }
   setModel(g) { this.g = g; this.bins = null; this.preset('iso'); }
   setBins(bins) { this.bins = bins; this.redraw(); }
+  setCursor(xyz) { this.cursor = xyz; this.redraw(); }
   preset(name) {
     const p = { iso: [-0.6, 0.6], top: [0, Math.PI / 2], front: [0, 0], side: [Math.PI / 2, 0] }[name] || [-0.6, 0.6];
     [this.yaw, this.pitch] = p; this.zoom = 1; this.pan = [0, 0]; this.redraw();
@@ -93,5 +94,10 @@ export class Viewer {
     ctx.strokeStyle = 'rgba(77,163,255,0.35)'; ctx.lineWidth = 1; ctx.beginPath();
     [[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.minX, b.maxY], [b.minX, b.minY]].forEach(([x, y], i) => { const px = PX(x, y), py = PY(x, y, b.minZ); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
     ctx.stroke();
+    if (this.cursor) {
+      const [x, y, z] = this.cursor;
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#101215'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(PX(x, y), PY(x, y, z), 5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    }
   }
 }

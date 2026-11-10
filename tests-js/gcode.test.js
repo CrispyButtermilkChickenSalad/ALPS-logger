@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGcode, posAt } from '../docs/js/gcode.js';
-import { TimeMap, autoSync, aggregate, extractPoses, loadColumns, percentile } from '../docs/js/sync.js';
+import { parseGcode, posAt, motionAt } from '../docs/js/gcode.js';
+import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, loadColumns, percentile } from '../docs/js/sync.js';
 import { fitCalibration, toUnits, estimateCountsPerGram, isCalibrated, DEFAULT_CALIB, VOLTS_PER_COUNT_G1 } from '../docs/js/calib.js';
 import { MemoryDb } from '../docs/js/db.js';
 
@@ -72,6 +72,62 @@ test('TimeMap is piecewise linear and invertible', () => {
   assert.equal(m.toSession(30), 40);
 });
 
+test('endpoint fit uses recording boundaries and rejects invalid durations', () => {
+  const g = parseGcode('G1 X100 F6000');
+  const map = endpointSync(g, { started: 100, ended: 400 });
+  assert.equal(map.toSession(0), 0);
+  assert.ok(Math.abs(map.toSession(g.totalTime) - 300) < 1e-9);
+  assert.ok(Math.abs(map.toGcode(150) - g.totalTime / 2) < 1e-9);
+  for (const session of [{ started: 100, ended: null }, { started: 100, ended: 100 }, { started: NaN, ended: 200 }]) assert.equal(endpointSync(g, session), null);
+  assert.equal(endpointSync({ totalTime: 0 }, { started: 1, ended: 2 }), null);
+});
+
+test('motion cursor reports commanded direction, not orientation', () => {
+  const g = parseGcode('G1 X10 F600\nG4 P1000\nG1 Y-10');
+  const moving = motionAt(g, g.t0[0] + g.dur[0] / 2);
+  assert.deepEqual(moving.direction, [1, 0, 0]);
+  assert.equal(moving.xyz[0], 5);
+  assert.equal(motionAt(g, g.t0[1] + 0.5).direction, null);
+  assert.equal(motionAt(parseGcode(''), 0), null);
+});
+
+test('summary aggregation uses bucket intervals and leaves gaps uncoloured', async () => {
+  const db = new MemoryDb();
+  const session = { started: 100, ended: 104, capture: { mode: 'events', bucketS: 1 } };
+  const id = await db.importSession(session, [[100, 1, 1, 0, 0, 0]], { env: [
+    [100, 8, 10, 12, 0, 9, 0, 0, 0, 5],
+    [101, 18, 20, 22, 0, 19, 0, 0, 0, 5],
+    [103, 28, 30, 32, 0, 29, 0, 0, 0, 5],
+  ] });
+  const cols = await loadColumns(db, id, session);
+  assert.equal(cols.fromEnv, true);
+  const g = { n: 4, flags: [1, 1, 1, 1], t0: [0.25, 0.5, 2, 1.5], dur: [0.25, 1, 0.5, 1] };
+  const a = aggregate(g, TimeMap.linear(0, 1, 4), cols, 'raw');
+  assert.equal(a.mean[0], 10);
+  assert.equal(a.mean[1], 15);
+  assert.equal(a.min[1], 8);
+  assert.equal(a.max[1], 22);
+  assert.ok(Number.isNaN(a.mean[2]));
+  // Segment times normally increase; test a partial interval independently.
+  const partial = { n: 1, flags: [1], t0: [1.5], dur: [1] };
+  assert.ok(Number.isNaN(aggregate(partial, TimeMap.linear(0, 1, 4), cols, 'raw').mean[0]));
+});
+
+test('incomplete raw capture falls back to available summary even with full metadata', async () => {
+  const db = new MemoryDb(), session = { started: 100, ended: 110, capture: { mode: 'full', bucketS: 1 } };
+  const id = await db.importSession(session, [[100, 1, 1, 0, 0, 0]], { env: [[109, 1, 2, 3, 0, 2, 0, 0, 0, 1]] });
+  assert.equal((await loadColumns(db, id, session)).fromEnv, true);
+  assert.equal((await loadColumns(db, id, session, { preferRaw: true })).fromEnv, undefined);
+});
+
+test('raw aggregation does not extrapolate beyond capture or bridge large gaps', () => {
+  const cols = { n: 2, t: [0, 10], raw: [1, 2], filt: [1, 2] };
+  for (const t of [-0.4, 0.1, 9.5, 10.1]) {
+    const g = { n: 1, flags: [1], t0: [t], dur: [0.1] };
+    assert.ok(Number.isNaN(aggregate(g, TimeMap.linear(0, 1, 20), cols).mean[0]));
+  }
+});
+
 test('autoSync recovers a time offset, scale drift and ignores pre-print macro moves', () => {
   const g = parseGcode(zigzagGcode(12));
   const poses = { t: [], x: [], y: [], z: [] };
@@ -106,7 +162,7 @@ test('aggregate assigns samples to segments through the time map', async () => {
   const db = new MemoryDb();
   const id = await db.startSession('t', 'manual');
   const rows = [];
-  for (let k = 0; k < 2000; k++) { const t = 1000 + 10 + (k / 2000) * g.totalTime; rows.push([t, 0, k < 1000 ? 100 : 500, 0, null, null]); }
+  for (let k = 0; k < 2001; k++) { const t = 1000 + 10 + (k / 2000) * g.totalTime; rows.push([t, 0, k < 1000 ? 100 : 500, 0, null, null]); }
   await db.addSamples(id, rows);
   const cols = await loadColumns(db, id, { started: 1000, n: rows.length });
   const a = aggregate(g, map, cols, 'filt');

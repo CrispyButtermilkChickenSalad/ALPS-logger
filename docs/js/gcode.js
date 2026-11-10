@@ -211,10 +211,26 @@ export function posAt(g, tg, out) {
     const mid = (lo + hi + 1) >> 1;
     if (g.t0[mid] <= tg) lo = mid; else hi = mid - 1;
   }
+
   const i = lo;
   const f = g.dur[i] > 0 ? Math.min(1, (tg - g.t0[i]) / g.dur[i]) : 1;
   out[0] = g.x0[i] + (g.x1[i] - g.x0[i]) * f;
   out[1] = g.y0[i] + (g.y1[i] - g.y0[i]) * f;
   out[2] = g.z0[i] + (g.z1[i] - g.z0[i]) * f;
   return out;
+}
+
+// Estimated commanded XYZ and segment direction; not a measured pose or orientation.
+export function motionAt(g, tg) {
+  if (!g.n || !Number.isFinite(tg)) return null;
+  const time = Math.max(0, Math.min(g.totalTime, tg));
+  let lo = 0, hi = g.n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (g.t0[mid] <= time) lo = mid; else hi = mid - 1;
+  }
+  const i = lo, xyz = posAt(g, time, [0, 0, 0]);
+  const delta = [g.x1[i] - g.x0[i], g.y1[i] - g.y0[i], g.z1[i] - g.z0[i]];
+  const length = Math.hypot(...delta);
+  return { index: i, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
 }

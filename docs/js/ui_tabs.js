@@ -1,5 +1,5 @@
-import { parseGcode } from './gcode.js';
-import { TimeMap, autoSync, aggregate, extractPoses, loadColumns, percentile, medianOf } from './sync.js';
+import { parseGcode, motionAt } from './gcode.js';
+import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, loadColumns, percentile, medianOf } from './sync.js';
 import { Viewer, toBins, gradientCss } from './viewer3d.js';
 import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
@@ -11,7 +11,7 @@ const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : 
 
 export function initTabs({ db, live }) {
   let calib = loadCalib(localStorage);
-  const S = { id: null, session: null, cols: null, poses: null, g: null, map: null, agg: null, aggSignal: null };
+  const S = { id: null, session: null, cols: null, poses: null, g: null, map: null, agg: null, aggSignal: null, autoTare: NaN };
   let viewer = null, pa = null;
 
   // ---- tabs -------------------------------------------------------------------------
@@ -20,7 +20,7 @@ export function initTabs({ db, live }) {
     for (const t of ['live', 'sessions', 'gcode', 'calib', 'pa', 'settings']) $('tab-' + t).hidden = t !== name;
     if (name === 'live' || name === 'sessions') window.dispatchEvent(new Event('resize'));
     if (name === 'pa') { if (!pa) pa = initPa({ db }); pa.refresh(); }
-    if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); } refreshSessions(); viewer.redraw(); }
+    if (name === 'gcode') { if (!viewer) { viewer = new Viewer($('v3d')); if (S.g) viewer.setModel(S.g); recolor(); updatePosition(); } refreshSessions(); viewer.redraw(); }
     if (name === 'gcode') drawFit();
   };
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
@@ -31,7 +31,7 @@ export function initTabs({ db, live }) {
 
   $('gSession').onchange = async () => {
     const id = parseSessionId($('gSession').value);
-    S.id = id || null; S.cols = S.poses = S.map = S.agg = null;
+    S.id = id || null; S.session = S.cols = S.poses = S.map = S.agg = null;
     if (!id) return recolor();
     setSync('loading session…');
     try {
@@ -39,7 +39,7 @@ export function initTabs({ db, live }) {
       S.cols = await loadColumns(db, id, S.session);
     } catch (e) { setSync(e.message, 'bad'); return recolor(); }
     S.poses = extractPoses(S.cols);
-    setSync((S.cols.fromEnv ? 'using summary trace (' + S.cols.n + ' buckets); ' : '') + (S.poses.n ? `${S.poses.n} logged positions` : 'no positions logged: use manual offset'), S.poses.n ? '' : 'bad');
+    setSync((S.cols.fromEnv ? 'using summary trace (' + S.cols.n + ' buckets); ' : '') + (S.poses.n >= 20 ? `${S.poses.n} distinct positions` : 'insufficient changing positions: fit endpoints or use manual timing'), S.poses.n >= 20 ? '' : 'bad');
     if (S.g) await runAuto(true); else recolor();
   };
 
@@ -52,6 +52,7 @@ export function initTabs({ db, live }) {
     const mx = Math.max(0, g.layerStart.length - 1);
     $('gLayer').max = mx; $('gLayer').value = mx; $('gLayerTxt').textContent = `${mx + 1}/${mx + 1}`;
     if (viewer) viewer.setModel(g);
+    $('gTime').value = 0; updatePosition();
     S.map = S.agg = null;
     if (S.cols) await runAuto(true); else recolor();
   }
@@ -68,7 +69,7 @@ export function initTabs({ db, live }) {
 
   async function runAuto(silent) {
     if (!S.g || !S.cols) return;
-    if (!S.poses.n) { if (!silent) alert('This session has no logged toolhead positions. Use manual offset/scale.'); return recolor(); }
+    if (S.poses.n < 20) { if (!silent) alert('This session has insufficient changing toolhead positions. Fit session start/end or use manual offset/scale.'); return recolor(); }
     setSync('fitting…');
     await new Promise((r) => setTimeout(r, 30));
     const r = autoSync(S.g, S.poses);
@@ -81,6 +82,14 @@ export function initTabs({ db, live }) {
     S.agg = null; recolor();
   }
   $('gAuto').onclick = () => runAuto(false);
+  $('gEndpoints').onclick = () => {
+    if (!S.g || !S.cols || !S.session) return alert('Choose a session and G-code first.');
+    const map = endpointSync(S.g, S.session);
+    if (!map) return alert('Endpoint fitting needs a completed session with valid start/end times and a non-empty estimated G-code timeline.');
+    S.map = map; S.agg = null;
+    $('gOff').value = '0'; $('gScale').value = String((S.session.ended - S.session.started) / S.g.totalTime);
+    syncSliders(); setSync('session endpoints fitted (approximate)', 'ok'); recolor();
+  };
 
   // ---- manual fit: sliders / drag shift and scale the log against the G-code --------------------------
   const fitInputs = () => ({ off: +$('gOff').value, sc: +$('gScale').value });
@@ -170,10 +179,11 @@ export function initTabs({ db, live }) {
     drawFit();
     if (!viewer) return;
     $('gBar').style.background = gradientCss();
-    if (!S.g || !S.map || !S.cols) { viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–'; return; }
+    if (!S.g || !S.map || !S.cols) { viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–'; $('gCoverage').textContent = 'No synchronized data.'; updatePosition(); return; }
     const signal = $('gSignal').value;
     if (!S.agg || S.aggSignal !== signal) { S.agg = aggregate(S.g, S.map, S.cols, signal); S.aggSignal = signal; }
     const auto = medianOf(S.cols[signal]);
+    S.autoTare = auto;
     const m = $('gMetric').value, n = S.g.n;
     const vals = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -191,7 +201,25 @@ export function initTabs({ db, live }) {
     const u = unitLabel(calib);
     $('gLoTxt').textContent = `${fmtV(lo)} ${u}`; $('gHiTxt').textContent = `${fmtV(hi)} ${u}`;
     viewer.setBins(toBins(vals, lo, hi));
+    let available = 0, total = 0;
+    for (let i = 0; i < n; i++) if (S.g.flags[i] & 1) { total++; if (Number.isFinite(vals[i])) available++; }
+    $('gCoverage').textContent = `${available}/${total} extrusion segments have data (${S.cols.fromEnv ? 'summary buckets' : 'raw samples'}); grey indicates unavailable data${S.cols.fromEnv && !S.cols.bucketS ? '; bucket width unknown' : ''}`;
+    updatePosition();
   }
+  function updatePosition() {
+    const motion = S.g && motionAt(S.g, S.g.totalTime * (+$('gTime').value / 1000));
+    if (!motion) { $('gPosition').textContent = 'no path loaded'; if (viewer) viewer.setCursor(null); return; }
+    const time = S.g.totalTime * (+$('gTime').value / 1000);
+    const direction = motion.direction ? motion.direction.map((v) => v.toFixed(2)).join(', ') : 'stationary';
+    let reading = '';
+    if (S.map && S.agg && S.cols) {
+      const v = S.agg.mean[motion.index];
+      reading = ` · session ${S.map.toSession(time).toFixed(1)} s · segment mean ${Number.isFinite(v) ? fmtV(toUnits(v, calib, S.autoTare)) + ' ' + unitLabel(calib) : 'unavailable'}`;
+    }
+    $('gPosition').textContent = `estimated ${time.toFixed(1)} s · XYZ ${motion.xyz.map((v) => v.toFixed(2)).join(', ')} mm · direction ${direction} · ${motion.extruding ? 'extruding' : 'travel/dwell'}${reading} · tilt unknown`;
+    if (viewer) viewer.setCursor(motion.xyz);
+  }
+  $('gTime').oninput = updatePosition;
   for (const id of ['gMetric', 'gSignal', 'gLo', 'gHi']) $(id).onchange = recolor;
   $('gTravel').onchange = () => { if (viewer) { viewer.showTravel = $('gTravel').checked; viewer.redraw(); } };
   document.querySelectorAll('button[data-view]').forEach((b) => (b.onclick = () => viewer && viewer.preset(b.dataset.view)));

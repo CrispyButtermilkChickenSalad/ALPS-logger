@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulateTilt } from '../docs/js/tilt_sim.js';
+import { simulateTilt, nozzleGeometry } from '../docs/js/tilt_sim.js';
 
 const example = { angle: 0, forceY: 2, forceZ: 3, lever: 10, axialGain: 100, lateralGain: 20, momentGain: 2 };
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
@@ -30,5 +30,27 @@ test('a blind model and invalid inputs are handled explicitly', () => {
   assert.equal(r.alternative, null);
   for (const invalid of [{ angle: NaN }, { lever: -1 }, { forceZ: Infinity }, { forceZ: 1e308, axialGain: 1e308 }]) {
     assert.throws(() => simulateTilt({ ...example, ...invalid }), RangeError);
+  }
+});
+
+test('flat-face gaps match 5 degree geometry in both tilt directions', () => {
+  const input = { angle: 5, diameter: 0.8, centerGap: 0.1 };
+  const g = nozzleGeometry(input);
+  close(g.plusY, 0.1 - 0.4 * Math.sin(5 * Math.PI / 180));
+  close(g.minusY, 0.1 + 0.4 * Math.sin(5 * Math.PI / 180));
+  close(g.difference, 0.8 * Math.sin(5 * Math.PI / 180));
+  close(2 * g.halfWidth * Math.tan(5 * Math.PI / 180), g.difference);
+  const reverse = nozzleGeometry({ ...input, angle: -5 });
+  close(reverse.plusY, g.minusY);
+  close(reverse.minusY, g.plusY);
+  const flat = nozzleGeometry({ ...input, angle: 0 });
+  close(flat.plusY, input.centerGap);
+  close(flat.minusY, input.centerGap);
+});
+
+test('geometry exposes overlap and rejects invalid geometry', () => {
+  assert.ok(nozzleGeometry({ angle: 5, diameter: 0.8, centerGap: 0 }).minimum < 0);
+  for (const invalid of [{ angle: 90 }, { angle: -90 }, { diameter: 0 }, { centerGap: -1 }, { diameter: NaN }, { diameter: 1e308 }]) {
+    assert.throws(() => nozzleGeometry({ angle: 5, diameter: 0.8, centerGap: 0.1, ...invalid }), RangeError);
   }
 });

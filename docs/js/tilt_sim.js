@@ -21,6 +21,48 @@ export function simulateTilt({ angle, forceY, forceZ, lever, axialGain, lateralG
   return { axial, lateral, moment, counts, sensitivityY, sensitivityZ, alternative };
 }
 
+// Flat circular face perpendicular to the assumed nozzle axis, above a flat horizontal plane.
+export function nozzleGeometry({ angle, diameter, centerGap }) {
+  if (![angle, diameter, centerGap].every(Number.isFinite) || Math.abs(angle) >= 90 || diameter <= 0 || centerGap < 0) {
+    throw new RangeError('Enter an angle between -90 and 90 degrees, a positive diameter and a non-negative centre gap.');
+  }
+  const radians = angle * Math.PI / 180;
+  const halfWidth = diameter * Math.cos(radians) / 2;
+  const halfDifference = diameter * Math.sin(radians) / 2;
+  const minusY = centerGap + halfDifference, plusY = centerGap - halfDifference;
+  if (![halfWidth, minusY, plusY, diameter * 2 + centerGap].every(Number.isFinite)) throw new RangeError('Geometry values are too large.');
+  return { halfWidth, minusY, plusY, minimum: Math.min(minusY, plusY), maximum: Math.max(minusY, plusY), difference: 2 * Math.abs(halfDifference) };
+}
+
+export function drawNozzleGeometry(canvas, input, geometry) {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#101215'; ctx.fillRect(0, 0, w, h);
+  const a = input.angle * Math.PI / 180, sin = Math.sin(a), cos = Math.cos(a);
+  const axisLength = input.diameter * 0.8;
+  const maxHeight = Math.max(input.centerGap + axisLength * cos, geometry.maximum, 0);
+  const minHeight = Math.min(0, geometry.minimum);
+  const maxY = Math.max(geometry.halfWidth, Math.abs(axisLength * sin)) + input.diameter * 0.15;
+  const sc = Math.min((w - 40) / (2 * maxY), (h - 45) / (maxHeight - minHeight + input.diameter * 0.2));
+  const px = (v) => w / 2 + v * sc;
+  const py = (v) => h - 25 - (v - minHeight) * sc;
+  ctx.strokeStyle = '#78828f'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(12, py(0)); ctx.lineTo(w - 12, py(0)); ctx.stroke();
+  ctx.strokeStyle = '#9da7b5'; ctx.lineWidth = 5; ctx.beginPath();
+  ctx.moveTo(px(0), py(input.centerGap));
+  ctx.lineTo(px(axisLength * sin), py(input.centerGap + axisLength * cos)); ctx.stroke();
+  ctx.strokeStyle = '#ffa726'; ctx.lineWidth = 4; ctx.beginPath();
+  ctx.moveTo(px(-geometry.halfWidth), py(geometry.minusY));
+  ctx.lineTo(px(geometry.halfWidth), py(geometry.plusY)); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px(0), py(input.centerGap), 3, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '12px sans-serif';
+  ctx.fillText('Y →   Z ↑   orange: assumed flat face   grey: plane', 10, 15);
+}
+
 export function drawTilt(canvas, input) {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (!w || !h) return;

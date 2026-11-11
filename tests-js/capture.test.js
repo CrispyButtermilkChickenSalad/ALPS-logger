@@ -152,7 +152,7 @@ test('mirror writes sidecar CSVs and the folder list hides them', async () => {
   await m.addSamples(id, [[1000, 1001, 'marker', 0, 1000, 1, null, null, null]], 'evt');
   await m.endSession(id);
   const names = [...dir.files.keys()].sort();
-  assert.deepEqual(names, ['alps_1_p.csv', 'alps_1_p.events.csv', 'alps_1_p.summary.csv']);
+  assert.deepEqual(names, ['alps_1_p.csv', 'alps_1_p.events.csv', 'alps_1_p.meta.json', 'alps_1_p.summary.csv']);
   assert.ok(dir.files.get('alps_1_p.events.csv').includes('marker'));
   assert.deepEqual((await m.listFolder()).map((f) => f.file), ['alps_1_p.csv']);
 });

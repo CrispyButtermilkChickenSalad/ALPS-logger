@@ -397,7 +397,7 @@ export function initTabs({ db, live }) {
       tr.children[2].append(d); tb.append(tr);
     });
     const fit = fitCalibration(calib.points);
-    $('cFit').textContent = fit ? `${fit.countsPerGram.toFixed(3)} counts/g, tare ${fit.tare.toFixed(0)}, R² ${fit.r2.toFixed(4)}` : 'need at least 2 points with different masses';
+    $('cFit').textContent = fit ? `${fit.countsPerGram.toFixed(3)} counts/g, tare ${fit.tare.toFixed(0)}, R² ${fit.r2.toFixed(4)}` : 'need at least 2 points with different masses and a finite fit';
     $('cApply').disabled = !fit || fit.countsPerGram === 0;
   }
   $('cTare').onclick = () => {
@@ -409,6 +409,13 @@ export function initTabs({ db, live }) {
     if (!r) return alert('No live data: connect the device first.');
     if (!Number.isFinite(g) || g < 0) return alert('Enter the mass in grams.');
     calib.points.push({ grams: g, counts: r.mean }); persist();
+  };
+  $('cManualPoint').onclick = () => {
+    const countsText = $('cManualCounts').value.trim(), massText = $('cManualMass').value.trim();
+    const counts = Number(countsText), grams = Number(massText);
+    if (!countsText || !Number.isFinite(counts)) return alert('Enter a finite count value.');
+    if (!massText || !Number.isFinite(grams) || grams < 0) return alert('Enter a finite, non-negative mass in grams.');
+    calib.points.push({ grams, counts }); persist();
   };
   $('cApply').onclick = () => {
     const fit = fitCalibration(calib.points); if (!fit) return;
@@ -450,6 +457,7 @@ export function initTabs({ db, live }) {
   renderCalib();
   return {
     refreshSessions,
+    reloadCalibration() { calib = loadCalib(localStorage); renderCalib(); recolor(); },
     async openInGcode(id) {
       show('gcode'); await refreshSessions();
       $('gSession').value = String(id); $('gSession').dispatchEvent(new Event('change'));

@@ -52,6 +52,62 @@ test('manual session ignores print end; moonraker outage keeps auto session', as
   await assert.rejects(rec.stopSession());
 });
 
+test('auto-record names repeated jobs from the file basename and keeps pauses in one session', async () => {
+  const db = new MemoryDb(); let rec = new Recorder(db);
+  const file = 'folder/part.gcode';
+  rec.onPrintUpdate('standby', file, 0, true);
+  assert.equal(rec.session, null, 'selecting a file alone does not start recording');
+  for (let i = 0; i < 3; i++) {
+    rec.onPrintUpdate('printing', file, 0, true);
+    const session = rec.session;
+    await session.ready;
+    assert.equal(rec.status().sessionName, i === 0 ? 'part.gcode' : `part.gcode (${i + 1})`);
+    rec.onSample(100, 90);
+    rec.onPrintUpdate('paused', file, 0, true);
+    rec.onPrintUpdate(null, null, null, false);
+    rec.onPrintUpdate('printing', file, 0, true);
+    assert.equal(rec.session, session);
+    rec.onPrintUpdate('complete', file, 0, true);
+    await session.chain;
+    rec = new Recorder(db);
+  }
+  const sessions = await db.listSessions();
+  assert.equal(sessions.length, 3);
+  assert.ok(sessions.every((s) => s.file === file && s.n === 1 && s.ended !== null));
+});
+
+test('auto-record can be disabled without stopping an existing recording or changing manual names', async () => {
+  const db = new MemoryDb(), rec = new Recorder(db);
+  rec.setAutoRecord(false);
+  rec.onPrintUpdate('printing', 'part.gcode', 0, true);
+  assert.equal(rec.session, null);
+  rec.startSession('custom name');
+  await rec.session.ready;
+  assert.equal(rec.status().sessionName, 'custom name');
+  await rec.stopSession();
+  rec.setAutoRecord(true);
+  rec.onPrintUpdate('printing', 'part.gcode', 0, true);
+  const session = rec.session;
+  rec.setAutoRecord(false);
+  assert.equal(rec.session, session);
+  rec.onPrintUpdate('cancelled', 'part.gcode', 0, true);
+  await session.chain;
+  assert.equal(rec.session, null);
+  rec.onPrintUpdate('printing', 'part.gcode', 0, true);
+  assert.equal(rec.session, null);
+});
+
+test('automatic numbering uses the highest saved suffix and reserves distinct concurrent names', async () => {
+  const db = new MemoryDb();
+  await db.importSession({ name: 'part.gcode (8)' }, []);
+  await db.startSession('part.gcode (notes)', 'manual');
+  await db.startSession('part.gcode2 (99)', 'manual');
+  const ids = await Promise.all(Array.from({ length: 3 }, () => db.startSession('part.gcode', 'moonraker', { autoName: true })));
+  assert.deepEqual(await Promise.all(ids.map(async (id) => (await db.getSession(id)).name)), ['part.gcode (9)', 'part.gcode (10)', 'part.gcode (11)']);
+  const manual = await db.startSession('part.gcode', 'manual');
+  assert.equal((await db.getSession(manual)).name, 'part.gcode');
+});
+
 test('samples arriving before the db returns an id are not lost', async () => {
   const db = new MemoryDb(); const rec = new Recorder(db, { flushInterval: 0 });
   rec.startSession('x');

@@ -4,6 +4,18 @@ const DB_NAME = 'alps-logger';
 const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const done = (tx) => new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); });
 
+function nextPrintName(base, sessions) {
+  let next = 1n;
+  const prefix = base + ' (';
+  for (const { name } of sessions) {
+    if (name === base && next < 2n) next = 2n;
+    if (typeof name !== 'string' || !name.startsWith(prefix) || !name.endsWith(')')) continue;
+    const suffix = name.slice(prefix.length, -1);
+    if (/^[1-9]\d*$/.test(suffix) && BigInt(suffix) >= next) next = BigInt(suffix) + 1n;
+  }
+  return next === 1n ? base : `${base} (${next})`;
+}
+
 export class IdbDb {
   static async open() {
     const open = indexedDB.open(DB_NAME, 1);
@@ -32,8 +44,11 @@ export class IdbDb {
   }
 
   async startSession(name, source, meta = {}) {
+    const { autoName = false, ...details } = meta;
     const tx = this.db.transaction('sessions', 'readwrite');
-    const id = await req(tx.objectStore('sessions').add({ name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta }));
+    const store = tx.objectStore('sessions');
+    if (autoName) name = nextPrintName(name, await req(store.getAll()));
+    const id = await req(store.add({ name, source, started: Date.now() / 1000, ended: null, n: 0, ...details }));
     await done(tx);
     return id;
   }
@@ -106,8 +121,10 @@ export class MemoryDb {
   constructor() { this.sessions = new Map(); this.rows = new Map(); this.next = 1; }
   _k(id, kind) { const m = this.rows.get(id); return m ? (m[kind] ||= []) : []; }
   async startSession(name, source, meta = {}) {
+    const { autoName = false, ...details } = meta;
+    if (autoName) name = nextPrintName(name, this.sessions.values());
     const id = this.next++;
-    this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0, ...meta });
+    this.sessions.set(id, { id, name, source, started: Date.now() / 1000, ended: null, n: 0, ...details });
     this.rows.set(id, { raw: [] });
     return id;
   }

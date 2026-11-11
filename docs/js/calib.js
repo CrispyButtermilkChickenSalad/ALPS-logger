@@ -6,6 +6,19 @@ export const G_TO_N = 0.00980665;
 
 export const DEFAULT_CALIB = { tare: null, countsPerGram: null, unit: 'g', invert: false, points: [], estimated: false };
 
+export function snapshotCalibration(value) {
+  if (value == null) return null;
+  const c = { ...DEFAULT_CALIB, ...value };
+  const nullableNumber = (v) => v === null || Number.isFinite(v);
+  if (typeof value !== 'object' || Array.isArray(value) || !nullableNumber(c.tare) || !nullableNumber(c.countsPerGram) ||
+      !['g', 'kg', 'N'].includes(c.unit) || typeof c.invert !== 'boolean' || typeof c.estimated !== 'boolean' ||
+      !Array.isArray(c.points) || c.points.some((p) => !p || !Number.isFinite(p.grams) || p.grams < 0 || !Number.isFinite(p.counts))) {
+    throw new Error('Invalid calibration settings');
+  }
+  return { tare: c.tare, countsPerGram: c.countsPerGram, unit: c.unit, invert: c.invert, estimated: c.estimated,
+    points: c.points.map((p) => ({ grams: p.grams, counts: p.counts })) };
+}
+
 // Least-squares fit of counts = tare + countsPerGram * grams.
 export function fitCalibration(points) {
   const pts = points.filter((p) => Number.isFinite(p.grams) && Number.isFinite(p.counts));
@@ -17,7 +30,9 @@ export function fitCalibration(points) {
   if (sxx === 0) return null;
   const countsPerGram = sxy / sxx, tare = my - countsPerGram * mx;
   const ssRes = pts.reduce((s, p) => s + (p.counts - (tare + countsPerGram * p.grams)) ** 2, 0);
-  return { tare, countsPerGram, r2: syy === 0 ? 1 : 1 - ssRes / syy, n };
+  const r2 = syy === 0 ? 1 : 1 - ssRes / syy;
+  if (![tare, countsPerGram, r2].every(Number.isFinite)) return null;
+  return { tare, countsPerGram, r2, n };
 }
 
 export function isCalibrated(c) { return Number.isFinite(c.countsPerGram) && c.countsPerGram !== 0; }

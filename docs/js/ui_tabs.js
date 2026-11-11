@@ -1,5 +1,5 @@
 import { parseGcode, motionAt } from './gcode.js';
-import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, reportedPoses, fileProgressSync, loadColumns, percentile, medianOf } from './sync.js';
+import { TimeMap, autoSync, endpointSync, aggregate, projectCurve, curveValueAt, extractPoses, reportedPoses, fileProgressSync, loadColumns, percentile, medianOf } from './sync.js';
 import { Viewer, toBins, gradientCss } from './viewer3d.js';
 import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
@@ -12,7 +12,7 @@ const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : 
 
 export function initTabs({ db, live }) {
   let calib = loadCalib(localStorage);
-  const S = { id: null, session: null, cols: null, poses: null, positions: [], g: null, gName: '', map: null, agg: null, aggSignal: null, autoTare: NaN };
+  const S = { id: null, session: null, cols: null, rawCols: null, rawReady: null, rawError: null, curve: null, poses: null, positions: [], g: null, gName: '', map: null, agg: null, aggSignal: null, autoTare: NaN };
   let viewer = null, pa = null;
   let fitRevision = 0, sessionRevision = 0;
 
@@ -30,6 +30,34 @@ export function initTabs({ db, live }) {
   // ---- G-code tab ---------------------------------------------------------------------
   async function refreshSessions() { await fillSessionSelect($('gSession'), db); }
   const setSync = (txt, cls = '') => { $('gSync').textContent = txt; $('gSync').className = 'pill ' + cls; };
+  const curveMode = () => $('gDisplay').value === 'curve';
+  const previewCols = () => curveMode() ? S.rawCols : S.cols;
+  if (localStorage.getItem('gDisplay') === 'curve') $('gDisplay').value = 'curve';
+  $('gMetric').disabled = curveMode();
+  async function prepareCurve() {
+    if (!curveMode() || !S.session || S.rawCols) return recolor();
+    const revision = sessionRevision;
+    if (!S.rawReady) {
+      S.rawError = null;
+      S.rawReady = loadColumns(db, S.id, S.session, { preferRaw: true });
+    }
+    const ready = S.rawReady;
+    recolor();
+    try {
+      const cols = await ready;
+      if (revision !== sessionRevision) return;
+      S.rawCols = cols; S.rawReady = null;
+    } catch (e) {
+      if (revision !== sessionRevision) return;
+      S.rawError = e.message; S.rawReady = null;
+    }
+    recolor();
+  }
+  $('gDisplay').onchange = async () => {
+    localStorage.setItem('gDisplay', $('gDisplay').value);
+    $('gMetric').disabled = curveMode();
+    await prepareCurve();
+  };
   if (localStorage.getItem('gPositionSource') === 'virtual') $('gPositionSource').value = 'virtual';
   const positionSourceUi = () => { $('gAuto').textContent = $('gPositionSource').value === 'virtual' ? 'Align from file progress' : 'Auto-fit from positions'; };
   positionSourceUi();
@@ -45,6 +73,7 @@ export function initTabs({ db, live }) {
     const revision = ++sessionRevision;
     const id = parseSessionId($('gSession').value);
     S.id = id || null; S.session = S.cols = S.poses = S.map = S.agg = null;
+    S.rawCols = S.rawReady = S.rawError = S.curve = null;
     S.positions = [];
     if (!id) return recolor();
     setSync('loading session…');
@@ -54,10 +83,12 @@ export function initTabs({ db, live }) {
       const [cols] = await Promise.all([loadColumns(db, id, session), db.scanSamples(id, (rows) => { for (const row of rows) positions.push(row); }, 'pos')]);
       if (revision !== sessionRevision) return;
       S.session = session; S.cols = cols; S.positions = positions;
+      if (!cols.fromEnv) S.rawCols = cols;
     } catch (e) { if (revision === sessionRevision) { setSync(e.message, 'bad'); recolor(); } return; }
     S.poses = S.positions.length ? reportedPoses(S.positions, S.session) : extractPoses(S.cols);
     setSync(`${S.poses.n} distinct reported positions; ${S.positions.filter((r) => r[4] != null && r[5] > 0).length} file-progress snapshots`);
     if (S.g) await runAuto(true); else recolor();
+    await prepareCurve();
   };
 
   async function loadGcodeText(text, name) {
@@ -167,8 +198,9 @@ export function initTabs({ db, live }) {
     const g = c.getContext('2d'); g.scale(dpr, dpr);
     g.fillStyle = '#101215'; g.fillRect(0, 0, W, H);
     fitView = null;
-    if (!S.cols || !S.cols.n) { g.fillStyle = '#8a919c'; g.font = '12px monospace'; g.fillText('choose a session', 8, 18); return; }
-    const { t, filt, n } = S.cols;
+    const cols = previewCols();
+    if (!cols || !cols.n) { g.fillStyle = '#8a919c'; g.font = '12px monospace'; g.fillText(S.session && curveMode() ? 'no full-rate samples loaded' : 'choose a session', 8, 18); return; }
+    const { t, n } = cols, signal = curveMode() ? cols[$('gSignal').value] : cols.filt;
     const m = S.map, G = S.g;
     const sStart = m ? m.toSession(0) : 0, sEnd = m ? m.toSession(G.totalTime) : 0;
     const x0 = Math.min(0, sStart), x1 = Math.max(t[n - 1], sEnd, x0 + 1);
@@ -178,7 +210,7 @@ export function initTabs({ db, live }) {
     const lo = new Float64Array(pw + 1).fill(Infinity), hi = new Float64Array(pw + 1).fill(-Infinity);
     let ymin = Infinity, ymax = -Infinity;
     for (let i = 0; i < n; i++) {
-      const v = filt[i]; if (!Number.isFinite(v)) continue;
+      const v = signal[i]; if (!Number.isFinite(v)) continue;
       const k = Math.round(px(t[i]) - L); if (k < 0 || k > pw) continue;
       if (v < lo[k]) lo[k] = v; if (v > hi[k]) hi[k] = v;
       if (v < ymin) ymin = v; if (v > ymax) ymax = v;
@@ -217,31 +249,60 @@ export function initTabs({ db, live }) {
     drawFit();
     if (!viewer) return;
     $('gBar').style.background = gradientCss();
-    if (!S.g || !S.map || !S.cols) { viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–'; $('gCoverage').textContent = 'No synchronized data.'; updatePosition(); return; }
+    if (!S.g || !S.map || !S.cols) { S.curve = null; viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–'; $('gCoverage').textContent = 'No synchronized data.'; updatePosition(); return; }
+    const cols = previewCols();
+    if (!cols) {
+      viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–';
+      $('gCoverage').textContent = S.rawError || 'Loading saved full-rate samples…'; updatePosition(); return;
+    }
+    const full = curveMode();
+    if (full && !cols.n) {
+      S.curve = null; viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–';
+      $('gCoverage').textContent = 'No saved full-rate samples. Record with "Full raw + summary trace" to keep the whole curve; summary buckets cannot recreate it.';
+      updatePosition(); return;
+    }
     const signal = $('gSignal').value;
-    if (!S.agg || S.aggSignal !== signal) { S.agg = aggregate(S.g, S.map, S.cols, signal); S.aggSignal = signal; }
-    const auto = medianOf(S.cols[signal]);
+    if (full) {
+      if (!S.curve || S.curve.g !== S.g || S.curve.map !== S.map || S.curve.cols !== cols || S.curve.signal !== signal) {
+        try { S.curve = { ...projectCurve(S.g, S.map, cols, signal), g: S.g, map: S.map, cols, signal }; }
+        catch (e) {
+          if (!(e instanceof RangeError)) throw e;
+          S.curve = null; viewer.setBins(null); $('gLoTxt').textContent = $('gHiTxt').textContent = '–';
+          $('gCoverage').textContent = e.message; updatePosition(); return;
+        }
+      }
+    } else if (!S.agg || S.aggSignal !== signal) { S.agg = aggregate(S.g, S.map, cols, signal); S.aggSignal = signal; }
+    const auto = medianOf(cols[signal]);
     S.autoTare = auto;
-    const m = $('gMetric').value, n = S.g.n;
+    const m = $('gMetric').value, n = full ? S.curve.n : S.g.n;
     const vals = new Float32Array(n);
+    let min = Infinity, max = -Infinity;
     for (let i = 0; i < n; i++) {
-      if (m === 'dev') {
+      if (full) vals[i] = toUnits(S.curve.values[i], calib, auto);
+      else if (m === 'dev') {
         const a = S.agg.min[i], b = S.agg.max[i];
         vals[i] = Number.isFinite(a) ? Math.max(Math.abs(toUnits(a, calib, auto)), Math.abs(toUnits(b, calib, auto))) : NaN;
       } else {
         const v = S.agg[m][i];
         vals[i] = Number.isFinite(v) ? toUnits(v, calib, auto) : NaN;
       }
+      if (Number.isFinite(vals[i])) { min = Math.min(min, vals[i]); max = Math.max(max, vals[i]); }
     }
-    let lo = $('gLo').value === '' ? percentile(vals, 2) : +$('gLo').value;
-    let hi = $('gHi').value === '' ? percentile(vals, 98) : +$('gHi').value;
-    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) { hi = (Number.isFinite(lo) ? lo : 0) + 1; }
+    let lo = $('gLo').value === '' ? (full ? min : percentile(vals, 2)) : +$('gLo').value;
+    let hi = $('gHi').value === '' ? (full ? max : percentile(vals, 98)) : +$('gHi').value;
+    if (!Number.isFinite(lo)) lo = 0;
+    if (!Number.isFinite(hi) || hi <= lo) hi = lo + 1;
     const u = unitLabel(calib);
     $('gLoTxt').textContent = `${fmtV(lo)} ${u}`; $('gHiTxt').textContent = `${fmtV(hi)} ${u}`;
-    viewer.setBins(toBins(vals, lo, hi));
-    let available = 0, total = 0;
-    for (let i = 0; i < n; i++) if (S.g.flags[i] & 1) { total++; if (Number.isFinite(vals[i])) available++; }
-    $('gCoverage').textContent = `${available}/${total} extrusion segments have data (${S.cols.fromEnv ? 'summary buckets' : 'raw samples'}); grey indicates unavailable data${S.cols.fromEnv && !S.cols.bucketS ? '; bucket width unknown' : ''}`;
+    if (full) {
+      viewer.setCurve(S.curve, toBins(vals, lo, hi));
+      $('gCoverage').textContent = `Full curve: ${S.curve.samples} timed samples mapped to ${S.curve.n} path sections, without per-move averaging. Grey = missing raw data. To retain the entire job, record with "Full raw + summary trace".`;
+    } else {
+      viewer.setBins(toBins(vals, lo, hi));
+      let available = 0, total = 0;
+      for (let i = 0; i < n; i++) if (S.g.flags[i] & 1) { total++; if (Number.isFinite(vals[i])) available++; }
+      $('gCoverage').textContent = `${available}/${total} extrusion segments have data (${cols.fromEnv ? 'summary buckets' : 'raw samples'}); grey indicates unavailable data${cols.fromEnv && !cols.bucketS ? '; bucket width unknown' : ''}`;
+    }
     updatePosition();
   }
   let commandedA = null;
@@ -252,9 +313,9 @@ export function initTabs({ db, live }) {
     const time = S.g.totalTime * (+$('gTime').value / 1000);
     const direction = motion.direction ? motion.direction.map((v) => v.toFixed(2)).join(', ') : 'stationary';
     let reading = '';
-    if (S.map && S.agg && S.cols) {
-      const v = S.agg.mean[motion.index];
-      reading = ` · session ${S.map.toSession(time).toFixed(1)} s · segment mean ${Number.isFinite(v) ? fmtV(toUnits(v, calib, S.autoTare)) + ' ' + unitLabel(calib) : 'unavailable'}`;
+    if (S.map && S.cols && (curveMode() || S.agg)) {
+      const v = curveMode() ? curveValueAt(S.curve, motion.index, motion.fraction) : S.agg.mean[motion.index];
+      reading = ` · session ${S.map.toSession(time).toFixed(1)} s · ${curveMode() ? 'sample' : 'segment mean'} ${Number.isFinite(v) ? fmtV(toUnits(v, calib, S.autoTare)) + ' ' + unitLabel(calib) : 'unavailable'}`;
     }
     $('gPosition').textContent = `estimated ${time.toFixed(1)} s · XYZ ${motion.xyz.map((v) => v.toFixed(2)).join(', ')} mm · direction ${direction} · ${motion.extruding ? 'extruding' : 'travel/dwell'}${reading} · commanded A ${motion.a.toFixed(2)}° (G-code word; not a measured angle, sign/axis mapping unverified)`;
     $('simUseA').disabled = false; commandedA = motion.a;

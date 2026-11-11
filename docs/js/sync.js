@@ -248,6 +248,60 @@ export function autoSync(g, P, { windowSeconds = 12 } = {}) {
 }
 
 // ---- per-segment aggregation ---------------------------------------------------------------------
+// Nearest-sample intervals, split at move boundaries. No averaging or summary fallback.
+export function projectCurve(g, map, cols, signal = 'filt') {
+  if (cols.fromEnv) throw new RangeError('Full-curve preview needs saved full-rate samples, not summary buckets.');
+  const T = cols.t, V = cols[signal], m = cols.n;
+  const offsets = new Uint32Array(g.n + 1), capacity = m + g.n;
+  const f0 = new Float32Array(capacity), f1 = new Float32Array(capacity), values = new Float32Array(capacity);
+  const intervals = [];
+  let previous = -1;
+  for (let k = 0; k < m; k++) {
+    if (!Number.isFinite(T[k]) || (k && T[k] < T[k - 1])) throw new RangeError('Sample timestamps must be finite and in recording order.');
+    if (!Number.isFinite(V[k])) continue;
+    if (previous >= 0 && T[k] > T[previous] && intervals.length < 100000) intervals.push(T[k] - T[previous]);
+    previous = k;
+  }
+  intervals.sort((a, b) => a - b);
+  const maxGap = Math.min(1, 4 * (intervals[intervals.length >> 1] || 0));
+  const nextSample = (k) => { while (k < m && !Number.isFinite(V[k])) k++; return k; };
+  const endTime = (i) => i + 1 < g.n ? g.t0[i + 1] : g.totalTime;
+  let n = 0, samples = 0, move = 0, prev = -1, k = nextSample(0);
+  while (k < m) {
+    const next = nextSample(k + 1), t = T[k];
+    const s0 = prev >= 0 && t - T[prev] <= maxGap ? (T[prev] + t) / 2 : t;
+    const s1 = next < m && T[next] - t <= maxGap ? (t + T[next]) / 2 : t;
+    const a = Math.max(0, map.coverage ? map.coverage[0] : 0, map.toGcode(s0));
+    const b = Math.min(g.totalTime, map.coverage ? map.coverage[1] : g.totalTime, map.toGcode(s1));
+    const before = n;
+    if (b > a) {
+      while (move < g.n && endTime(move) <= a) move++;
+      for (let i = move; i < g.n && g.t0[i] < b; i++) {
+        const end = endTime(i), duration = end - g.t0[i];
+        const lo = Math.max(a, g.t0[i]), hi = Math.min(b, end);
+        if (!(g.flags[i] & 4) && duration > 0 && hi > lo) {
+          f0[n] = (lo - g.t0[i]) / duration; f1[n] = (hi - g.t0[i]) / duration;
+          values[n++] = V[k]; offsets[i + 1]++;
+        }
+        if (end <= b) move = i + 1;
+      }
+    }
+    if (n > before) samples++;
+    prev = k; k = next;
+  }
+  for (let i = 1; i < offsets.length; i++) offsets[i] += offsets[i - 1];
+  return { n, samples, offsets, f0: f0.subarray(0, n), f1: f1.subarray(0, n), values: values.subarray(0, n) };
+}
+
+export function curveValueAt(curve, move, fraction) {
+  if (!curve || move < 0 || move + 1 >= curve.offsets.length) return NaN;
+  const start = curve.offsets[move], end = curve.offsets[move + 1];
+  let lo = start, hi = end;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (curve.f0[mid] <= fraction) lo = mid + 1; else hi = mid; }
+  const k = lo - 1;
+  return k >= start && fraction <= curve.f1[k] ? curve.values[k] : NaN;
+}
+
 // signal: 'filt' | 'raw'. Returns {mean,min,max} (counts, NaN = no data) for every segment.
 export function aggregate(g, map, cols, signal = 'filt') {
   const n = g.n, m = cols.n, T = cols.t, V = cols[signal];

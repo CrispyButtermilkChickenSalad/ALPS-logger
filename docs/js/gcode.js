@@ -268,5 +268,5 @@ export function motionAt(g, tg) {
   const length = Math.hypot(...delta);
   const span = g.dur[i] > 0 ? Math.min(1, Math.max(0, (time - g.t0[i]) / g.dur[i])) : 1;
   const a = g.a0[i] + (g.a1[i] - g.a0[i]) * span;
-  return { index: i, a, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
+  return { index: i, fraction: span, a, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
 }

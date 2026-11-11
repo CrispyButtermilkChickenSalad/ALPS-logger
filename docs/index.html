@@ -234,6 +234,7 @@
     <section>
       <h2>Preview</h2>
       <div class="row">
+        <label>Display <select id="gDisplay"><option value="segments">Per-move statistics</option><option value="curve">Full load-cell curve (saved samples)</option></select></label>
         <label>Colour by <select id="gMetric"><option value="mean">mean</option><option value="max">max</option><option value="min">min</option><option value="dev">peak deviation from tare</option></select></label>
         <label>Signal <select id="gSignal"><option value="filt">filtered</option><option value="raw">raw</option></select></label>
         <label>Min <input id="gLo" type="number" step="any" placeholder="auto"></label>
@@ -247,6 +248,7 @@
       </div>
       <canvas id="v3d"></canvas>
       <p id="gCoverage" class="hint">No synchronized data.</p>
+      <p class="hint"><b>Full load-cell curve</b> colours smaller sections within each move from the saved raw or filtered samples, without per-move averaging or summary fallback. Choose <b>Full raw + summary trace</b> on the Record tab before printing to retain the entire curve. Event-only recordings show only their saved sample windows; summary-only recordings cannot recover discarded samples. Missing intervals stay grey. All timed samples are used when stationary; rotating/zooming temporarily thins the drawing. Travel moves can also show sample colours when enabled. Timing and positions still depend on the selected alignment, not measured physical motion.</p>
       <div class="row"><label style="flex:1">Estimated path time <input id="gTime" type="range" min="0" max="1000" value="0" style="width:60%;vertical-align:middle"></label><span id="gPosition" class="pill">no path loaded</span></div>
       <p class="hint">White dot = estimated commanded XYZ, not measured toolhead pose. Direction describes the current path segment, not force. Rotation, tool geometry and actual nozzle orientation are unknown; G-code comments are not motion commands.</p>
       <p class="hint">Drag to rotate, Shift/right-drag to pan, wheel to zoom, double-click to reset. Grey = unavailable ALPS data for that segment. Colours show values relative to the tare in the units set on the Calibration tab. Summary buckets blur short moves; raw extrema cover whole overlapping buckets, while filtered extrema are extrema of bucket means, not individual samples.</p>

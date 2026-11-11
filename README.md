@@ -20,6 +20,7 @@ sessions can be viewed and exported as CSV. Nothing is uploaded.
 - Needs a Chromium browser (Chrome/Edge desktop). Close Mellow's web tool first – only one program can hold the port.
 - Keep the tab open while recording (optional "keep screen awake").
 - **Optional Moonraker/Klipper:** enter the Moonraker URL to auto-start/stop a recording per print and log toolhead Z.
+  **Settings > Klipper / Moonraker > auto-record Klipper jobs** is on by default and saved in this browser. Recording starts when Moonraker reports `printing`, not just file selection, and keeps the same session through pauses or temporary Moonraker outages. Connect a load-data source and keep the page open. Auto-names use the G-code basename, then append increasing suffixes for repeats: `part.gcode`, `part.gcode (2)`, `part.gcode (3)`. Numbering is allocated atomically from the highest matching saved session, including restored/imported history; deleting history can permit number reuse. The original full G-code path remains in session metadata. Manual names are unchanged. Disabling auto-record leaves any running session alone; use Stop to finish it.
   Moonraker must list the page origin in `[authorization] cors_domains`. An https page cannot call a plain `http://` Moonraker
   (mixed content) unless you run the page from `http://localhost` (`python -m http.server --directory docs`),
   serve Moonraker over https, or allow insecure content for the site.

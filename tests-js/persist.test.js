@@ -54,8 +54,10 @@ test('recording snapshots are immutable and survive auto-save, folder import and
   assert.equal(metadata.calibration, null, 'auto-save CSV stays in counts');
   assert.equal(metadata.session.samples, 1); assert.ok(metadata.session.ended_epoch);
   assert.deepEqual((await m.getSession('f:alps_1_calibrated.csv')).calibration, expected);
+  assert.equal((await m.getSession('f:alps_1_calibrated.csv')).name, 'calibrated');
   const imported = await m.importFromFolder('f:alps_1_calibrated.csv');
   assert.deepEqual((await m.getSession(imported)).calibration, expected);
+  assert.equal((await m.getSession(imported)).name, 'calibrated');
   const restored = new MemoryDb();
   await importBackup(restored, await (await exportBackup(inner)).text());
   assert.deepEqual((await restored.getSession(id)).calibration, expected);
@@ -150,6 +152,19 @@ test('mirror appends a CSV file live and matches inner storage', async () => {
   assert.equal(lines[0], 't_s,epoch,raw,filtered,z,x,y');
   assert.match(lines[2], /^2\.0000,.*,200,190,0.2,1,2$/);
   assert.equal((await m.getSamples(id)).length, 2);
+});
+
+test('importing auto-saved job names preserves repeat numbering', async () => {
+  const dir = fakeDir(), original = new MirrorDb(new MemoryDb()); original.setFolder(dir);
+  for (let i = 0; i < 2; i++) {
+    const id = await original.startSession('part.gcode', 'moonraker', { autoName: true });
+    await original.endSession(id);
+  }
+  const restored = new MirrorDb(new MemoryDb()); restored.setFolder(dir);
+  for (const file of await restored.listFolder()) await restored.importFromFolder(file.id);
+  const id = await restored.startSession('part.gcode', 'moonraker', { autoName: true });
+  assert.equal((await restored.getSession(id)).name, 'part.gcode (3)');
+  await restored.endSession(id);
 });
 
 test('mirror without folder only stores, and write errors do not break recording', async () => {

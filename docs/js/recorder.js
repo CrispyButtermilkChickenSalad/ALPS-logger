@@ -13,6 +13,7 @@ export class Recorder {
     this.flushInterval = flushInterval;
     this.now = now;
     this.session = null;
+    this.autoRecord = true;
     this.printState = 'unknown';
     this.filename = null;
     this.z = null;
@@ -80,8 +81,8 @@ export class Recorder {
     this.y = y;
     this.filename = filename || null;
     this.printState = state || 'unknown';
-    if (ACTIVE.has(this.printState) && !this.session) {
-      this._start(this.filename || 'print', 'moonraker', true);
+    if (this.autoRecord && ACTIVE.has(this.printState) && !this.session) {
+      this._start(this.filename?.split(/[\\/]/).pop() || 'print', 'moonraker', true);
     }
     this._recordPosition([this.now(), x, y, z, progress.filePosition ?? null, progress.fileSize ?? null, this.filename, this.printState]);
     if (END.has(this.printState) && this.session && this.session.auto) {
@@ -105,14 +106,19 @@ export class Recorder {
   _start(name, source, auto) {
     const s = { id: null, name, auto, pending: { raw: [], env: [], layer: [], evt: [], pos: [] }, chain: Promise.resolve() };
     s.cap = new Capture(this.capture, (kind, row) => s.pending[kind].push(row));
-    const meta = { capture: JSON.parse(JSON.stringify(this.capture)) };
+    const meta = { capture: JSON.parse(JSON.stringify(this.capture)), autoName: auto };
     if (this.moonrakerOk && this.filename) meta.file = this.filename;
-    s.ready = Promise.resolve(this.db.startSession(name, source, meta)).then((id) => { s.id = id; });
+    s.ready = Promise.resolve(this.db.startSession(name, source, meta)).then(async (id) => {
+      s.id = id;
+      if (auto) { s.name = (await this.db.getSession(id)).name; this._changed(); }
+    });
     s.ready.catch((e) => this.log('db error: ' + e.message));
     this.session = s;
     this._lastFlush = this.now();
     this._changed();
   }
+
+  setAutoRecord(on) { this.autoRecord = !!on; this._changed(); }
 
   // Applies to the running session immediately and to later ones.
   setCapture(cfg) {

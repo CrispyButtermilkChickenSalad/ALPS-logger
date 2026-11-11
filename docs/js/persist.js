@@ -139,6 +139,7 @@ export class MirrorDb {
     const v = parseCsv(await f.text(), name);
     if (metadataFile) {
       const metadata = JSON.parse(await metadataFile.text());
+      if (typeof metadata.session?.name === 'string' && metadata.session.name) v.session.name = metadata.session.name;
       let settings = metadata.recording_calibration ?? metadata.calibration_settings;
       if (settings === undefined && metadata.calibration) {
         const cal = metadata.calibration;

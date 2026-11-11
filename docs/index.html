@@ -182,9 +182,10 @@
       <label>API key <input id="mrKey" type="password" placeholder="(optional)" style="width:160px"></label>
       <button id="btnMr">Enable</button>
       <span id="mrState" class="pill">off</span>
+      <label><input id="autoRecord" type="checkbox" checked> auto-record Klipper jobs</label>
       <label title="Stops the screen from sleeping so the tab keeps running during long prints"><input id="wake" type="checkbox"> keep screen awake</label>
     </div>
-    <p class="hint">When enabled, a recording starts and stops automatically with each print. Reported XYZ and virtual-SD file byte progress are saved together, independently of load-sample capture mode. In the G-code tab, choose reported positions or virtual positions derived from the original file (useful with <code>kinematics: none</code>). Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
+    <p class="hint">With Moonraker enabled and auto-record checked, recording starts when Klipper reports printing (not merely when a file is selected), and stops on completion, cancellation or error. Pauses keep the same recording. Jobs are named from the G-code basename: part.gcode, part.gcode (2), part.gcode (3), continuing from the highest matching saved session. Numbering survives reloads and restored/imported sessions; deleting history can allow numbers to be reused. Disabling auto-record does not stop a running recording; use Stop if needed. The auto-record preference is saved in this browser. Keep this page open and connect a load-data source to capture readings. Reported XYZ and virtual-SD file byte progress are saved together, independently of load-sample capture mode. In the G-code tab, choose reported positions or virtual positions derived from the original file (useful with <code>kinematics: none</code>). Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
     <h2>Keep your data safe</h2>

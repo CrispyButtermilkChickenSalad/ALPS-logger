@@ -590,6 +590,12 @@ function initCapture() {
     onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; },
   });
   rec = new Recorder(db);
+  $('autoRecord').checked = localStorage.getItem('alpsAutoRecord') !== '0';
+  rec.setAutoRecord($('autoRecord').checked);
+  $('autoRecord').onchange = () => {
+    localStorage.setItem('alpsAutoRecord', $('autoRecord').checked ? '1' : '0');
+    rec.setAutoRecord($('autoRecord').checked);
+  };
   initCapture();
   tabsApi = initTabs({ db, live });
   initDurability();

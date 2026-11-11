@@ -1,5 +1,6 @@
 // Durability helpers: persistent-storage request, auto-save mirror to a user-chosen folder, backup/restore.
-import { toCsv, kindToCsv, KINDS, safeName } from './data.js';
+import { toCsv, kindToCsv, exportMeta, KINDS, safeName } from './data.js';
+import { loadCalib, saveCalib, snapshotCalibration } from './calib.js';
 
 export async function requestPersistence(storage = globalThis.navigator?.storage) {
   if (!storage?.persist) return { supported: false, persisted: false };
@@ -105,8 +106,8 @@ export async function fillSessionSelect(sel, db) {
 // The CSV holds counts only (same columns as the manual export); failures never interrupt recording.
 // Ids like "f:name.csv" address CSV files in the folder (read-only) through the same db interface.
 export class MirrorDb {
-  constructor(inner, { onError = () => {} } = {}) {
-    this.inner = inner; this.dir = null; this.onError = onError; this.files = new Map(); this.chains = new Map(); this.lastWrite = null; this.cache = new Map();
+  constructor(inner, { onError = () => {}, getCalibration = () => null } = {}) {
+    this.inner = inner; this.dir = null; this.onError = onError; this.getCalibration = getCalibration; this.files = new Map(); this.chains = new Map(); this.lastWrite = null; this.cache = new Map();
     for (const m of ['listSessions', 'deleteSession', 'importSession']) this[m] = (...a) => inner[m](...a);
   }
   setFolder(dir) { this.dir = dir || null; this.files.clear(); this.cache.clear(); }
@@ -128,14 +129,27 @@ export class MirrorDb {
     let positionsFile = null;
     try { positionsFile = await (await this.dir.getFileHandle(name.replace(/\.csv$/i, '.positions.csv'))).getFile(); }
     catch (e) { if (e.name !== 'NotFoundError') throw e; }
+    let metadataFile = null;
+    try { metadataFile = await (await this.dir.getFileHandle(name.replace(/\.csv$/i, '.meta.json'))).getFile(); }
+    catch (e) { if (e.name !== 'NotFoundError') throw e; }
     const c = this.cache.get(id);
     const positionVersion = positionsFile ? `${positionsFile.lastModified}:${positionsFile.size}` : '';
-    if (c && c.mod === f.lastModified && c.size === f.size && c.positionVersion === positionVersion) return c.v;
+    const metadataVersion = metadataFile ? `${metadataFile.lastModified}:${metadataFile.size}` : '';
+    if (c && c.mod === f.lastModified && c.size === f.size && c.positionVersion === positionVersion && c.metadataVersion === metadataVersion) return c.v;
     const v = parseCsv(await f.text(), name);
+    if (metadataFile) {
+      const metadata = JSON.parse(await metadataFile.text());
+      let settings = metadata.recording_calibration ?? metadata.calibration_settings;
+      if (settings === undefined && metadata.calibration) {
+        const cal = metadata.calibration;
+        settings = { tare: cal.tare_counts, countsPerGram: cal.counts_per_gram, unit: cal.unit, invert: !!cal.inverted };
+      }
+      if (settings !== undefined) v.session.calibration = snapshotCalibration(settings);
+    }
     v.positions = positionsFile ? parsePositionCsv(await positionsFile.text()) : [];
     const printed = v.positions.find((r) => r[6] && r[5] > 0);
     if (printed) v.session.file = printed[6];
-    this.cache.delete(id); this.cache.set(id, { mod: f.lastModified, size: f.size, positionVersion, v });
+    this.cache.delete(id); this.cache.set(id, { mod: f.lastModified, size: f.size, positionVersion, metadataVersion, v });
     if (this.cache.size > 2) this.cache.delete(this.cache.keys().next().value);
     return v;
   }
@@ -169,9 +183,23 @@ export class MirrorDb {
     return f;
   }
   async startSession(name, source, meta) {
-    const id = await this.inner.startSession(name, source, meta);
-    if (this.dir) this._queue(id, () => this._file(id, 'raw'));
+    const calibration = snapshotCalibration(meta?.calibration ?? this.getCalibration());
+    const id = await this.inner.startSession(name, source, { ...meta, calibration });
+    if (this.dir) {
+      this._queue(id, () => this._file(id, 'raw'));
+      this._queue(id, () => this._writeMeta(id));
+    }
     return id;
+  }
+  async _writeMeta(id) {
+    const session = await this.inner.getSession(id);
+    const metadata = exportMeta(session, [], null);
+    metadata.session.samples = session.n;
+    const name = `alps_${id}_${safeName(session.name)}.meta.json`;
+    const fh = await this.dir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify(metadata, null, 2)); await w.close();
+    this.lastWrite = Date.now();
   }
   async _append(f, text) {
     if (!f || !text) return;
@@ -191,6 +219,7 @@ export class MirrorDb {
   }
   async endSession(id) {
     await this.inner.endSession(id);
+    if (this.dir && this.chains.has(id)) this._queue(id, () => this._writeMeta(id));
     await (this.chains.get(id) || Promise.resolve());
     for (const k of [...this.files.keys()]) if (k.startsWith(`${id}:`)) this.files.delete(k);
     this.chains.delete(id);
@@ -198,8 +227,9 @@ export class MirrorDb {
 }
 
 // ---- backup / restore ---------------------------------------------------------------------------
-export async function exportBackup(db) {
-  const parts = ['{"format":"alps-logger-backup","version":2,"sessions":['];
+export async function exportBackup(db, storage = null) {
+  const calibration = storage ? snapshotCalibration(loadCalib(storage)) : null;
+  const parts = ['{"format":"alps-logger-backup","version":3,"calibration_settings":' + JSON.stringify(calibration) + ',"sessions":['];
   const list = (await db.listSessions()).sort((a, b) => a.id - b.id);
   let first = true;
   for (const s of list) {
@@ -212,11 +242,17 @@ export async function exportBackup(db) {
   return new Blob(parts, { type: 'application/json' });
 }
 
-export async function importBackup(db, text) {
+export async function importBackup(db, text, storage = null) {
   let doc;
   try { doc = JSON.parse(text); } catch { throw new Error('Not a valid backup file'); }
   if (doc?.format !== 'alps-logger-backup' || !Array.isArray(doc.sessions)) throw new Error('Not an ALPS logger backup file');
+  const calibration = snapshotCalibration(doc.calibration_settings);
+  const sessions = doc.sessions.map((entry) => ({
+    ...entry, session: entry.session?.calibration === undefined ? entry.session :
+      { ...entry.session, calibration: snapshotCalibration(entry.session.calibration) },
+  }));
   let n = 0;
-  for (const { session, rows, extra } of doc.sessions) { await db.importSession(session, rows, extra || {}); n++; }
+  for (const { session, rows, extra } of sessions) { await db.importSession(session, rows, extra || {}); n++; }
+  if (storage && calibration) saveCalib(storage, calibration);
   return n;
 }

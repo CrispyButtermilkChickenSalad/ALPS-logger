@@ -345,6 +345,8 @@ test('calibration fit, units and defaults', () => {
   assert.ok(Math.abs(toUnits(-674000 + 735, { ...c, unit: 'N' }) - 0.0980665) < 1e-6);
   assert.ok(Math.abs(toUnits(-674000 + 735, { ...c, invert: true }) + 10) < 1e-6);
   assert.equal(fitCalibration([{ grams: 0, counts: 1 }]), null);
+  assert.equal(fitCalibration([{ grams: 0, counts: -674000 }, { grams: 0, counts: -637250 }]), null);
+  assert.equal(fitCalibration([{ grams: 0, counts: 1e308 }, { grams: 500, counts: 1e308 }]), null);
 });
 
 test('estimateCountsPerGram uses the ADS131M02 LSB size', () => {

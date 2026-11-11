@@ -510,7 +510,7 @@ async function initDurability() {
 
   const downloadBackup = async (auto) => {
     try {
-      const blob = await exportBackup(db);
+      const blob = await exportBackup(db, localStorage);
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
       a.download = `alps_backup_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}${auto ? `_${p2(d.getHours())}${p2(d.getMinutes())}` : ''}.json`;
@@ -542,7 +542,13 @@ async function initDurability() {
   $('fileRestore').onchange = async () => {
     const f = $('fileRestore').files[0]; $('fileRestore').value = '';
     if (!f) return;
-    try { const n = await importBackup(db, await f.text()); $('backupState').textContent = `restored ${n} session(s) (added as new sessions)`; loadSessions(); }
+    try {
+      const n = await importBackup(db, await f.text(), localStorage);
+      tabsApi.reloadCalibration();
+      $('backupState').textContent = `restored ${n} session(s) (added as new sessions); saved calibration settings restored when included`;
+      $('backupState').className = 'pill';
+      loadSessions();
+    }
     catch (e) { $('backupState').textContent = e.message; $('backupState').className = 'pill bad'; }
   };
 }
@@ -579,7 +585,10 @@ function initCapture() {
     $('noDb').style.display = 'block'; $('noDb').textContent = 'Could not open browser storage: ' + e.message; return;
   }
   const idb = db;
-  db = new MirrorDb(idb, { onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; } });
+  db = new MirrorDb(idb, {
+    getCalibration: () => loadCalib(localStorage),
+    onError: (e) => { $('folderState').textContent = 'folder write failed: ' + e.message; $('folderState').className = 'pill bad'; },
+  });
   rec = new Recorder(db);
   initCapture();
   tabsApi = initTabs({ db, live });

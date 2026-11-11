@@ -201,7 +201,7 @@
       <span id="backupState" class="pill">–</span>
       <label title="Firefox can't write to a chosen folder, so a backup file is downloaded to your Downloads folder every 15 min while recording, and when a recording stops"><input id="autoBackup" type="checkbox"> auto-backup (Firefox: download)</label>
     </div>
-    <p class="hint">Sessions are saved to this browser as they record and survive closing the tab (recording itself stops when the page closes). The browser can still delete them if site data is cleared or storage runs low, so ask it to keep them (status shown at the left), mirror recordings to a folder you choose (Chrome/Edge: counts-only CSV, appended live), and make a backup file now and then. For unattended logging use the Python service.</p>
+    <p class="hint">Sessions are saved to this browser as they record and survive closing the tab (recording itself stops when the page closes). The browser can still delete them if site data is cleared or storage runs low, so ask it to keep them (status shown at the left), mirror recordings to a folder you choose (Chrome/Edge: counts-only CSV, appended live, plus a matching .meta.json calibration snapshot), and make a backup file now and then. Keep sidecars with their CSV. Backups preserve recording snapshots and current calibration settings; Restore also restores those current settings when included. Older backups leave current calibration unchanged. For unattended logging use the Python service.</p>
   </section>
   </div>
   <div id="tab-gcode" class="tab" hidden>
@@ -311,8 +311,15 @@
     </section>
     <section>
       <h2>Calibration points</h2>
+      <div class="row">
+        <label>Counts <input id="cManualCounts" type="number" step="any" placeholder="e.g. -674000"></label>
+        <label>Mass (g) <input id="cManualMass" type="number" min="0" step="any" placeholder="e.g. 0"></label>
+        <button id="cManualPoint">Add manual point</button>
+      </div>
+      <p class="hint">Enter a measured count value and its known mass, then add the point. No device connection is needed. Add at least two points with different masses (one can be 0 g), then click Apply fit. More points use the same least-squares fit as live captures. Choose kg above to display the fitted conversion in kilograms.</p>
       <table><thead><tr><th>Mass (g)</th><th>Counts</th><th></th></tr></thead><tbody id="cPts"></tbody></table>
       <div class="row" style="margin-top:10px"><span id="cFit" class="pill">need at least 2 points</span><button id="cApply" class="primary" disabled>Apply fit</button></div>
+      <p class="hint">The applied fit is saved in this browser. CSV downloads retain ADC counts and add calibrated columns in the selected unit; the main CSV download also includes calibration metadata. G-code colours/cursor and the Calibration live reading use the current fit. Live, recent/session, event and PA charts, and the G-code timing-fit graph, still use counts. New recordings keep a start-of-recording snapshot of the tare, scale, unit, sign, estimate flag and calibration points, preserved in folder .meta.json sidecars and backups. Folder import keeps that snapshot without changing the current fit. Backups also save and restore current settings. Changing calibration later does not rewrite a recording snapshot or an existing download; older recordings have no historical snapshot.</p>
     </section>
     <section>
       <h2>Recommended values &amp; estimate</h2>

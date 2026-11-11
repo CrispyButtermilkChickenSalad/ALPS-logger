@@ -1,5 +1,5 @@
 // Pure helpers for viewing/exporting recorded rows.
-import { isCalibrated, toUnits } from './calib.js';
+import { isCalibrated, toUnits, snapshotCalibration } from './calib.js';
 
 // Bucket rows into <= maxPoints entries: [t, rawMean, rawMin, rawMax, filtMean, zMean].
 // min/max of raw are kept so short spikes survive decimation.
@@ -53,6 +53,8 @@ export function exportMeta(session, rows, calib, env = []) {
     session: { id: session.id, name: session.name, source: session.source, started_epoch: session.started, ended_epoch: session.ended, samples: rows.length },
     capture: session.capture || null,
     file: session.file || null,
+    recording_calibration: snapshotCalibration(session.calibration),
+    calibration_settings: snapshotCalibration(calib),
     positions: {
       sidecar: '.positions.csv',
       description: 'Polled reported XYZ and virtual_sdcard file byte offset; derive virtual XYZ using the original G-code, not measured motion.',

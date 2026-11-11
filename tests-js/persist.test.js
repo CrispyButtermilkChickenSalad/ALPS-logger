@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryDb } from '../docs/js/db.js';
-import { MirrorDb, exportBackup, importBackup, requestPersistence, parseCsv, parseSessionId } from '../docs/js/persist.js';
+import { MirrorDb, exportBackup, importBackup, requestPersistence, parseCsv, parseSessionId, parsePositionCsv } from '../docs/js/persist.js';
+import { kindToCsv } from '../docs/js/data.js';
 
 function fakeDir() {
   const files = new Map();
@@ -15,7 +16,13 @@ function fakeDir() {
   });
   return {
     files, name: 'fake',
-    async getFileHandle(name) { if (!files.has(name)) files.set(name, ''); return handle(name); },
+    async getFileHandle(name, { create = false } = {}) {
+      if (!files.has(name)) {
+        if (!create) throw Object.assign(new Error('File not found'), { name: 'NotFoundError' });
+        files.set(name, '');
+      }
+      return handle(name);
+    },
     async *entries() { for (const n of files.keys()) yield [n, handle(n)]; },
   };
 }
@@ -82,6 +89,35 @@ test('backup round trip restores sessions as new ones', async () => {
   assert.equal((await b.getSamples(s.id)).length, 2);
   await assert.rejects(() => importBackup(b, '{"a":1}'), /backup/);
   await assert.rejects(() => importBackup(b, 'nope'), /valid/);
+});
+
+test('position traces round-trip through CSV, folder import and backups without changing reported data', async () => {
+  const inner = new MemoryDb(), dir = fakeDir(), errors = [];
+  const m = new MirrorDb(inner, { onError: (e) => errors.push(e) }); m.setFolder(dir);
+  const file = 'folder/part,"quoted".gcode';
+  const id = await m.startSession('virtual', 'moonraker', { file });
+  const t = (await m.getSession(id)).started;
+  const positions = [[t, 0, 0, 0, 0, 100, file, 'printing'], [t + 1, 0, 0, 0, 100, 100, file, 'complete']];
+  await m.addSamples(id, [[t, 12, 13, 0, 0, 0]]);
+  await m.addSamples(id, positions, 'pos');
+  await m.endSession(id);
+  assert.deepEqual(errors, []);
+  const csv = dir.files.get('alps_1_virtual.positions.csv');
+  assert.match(csv, /"folder\/part,""quoted""\.gcode"/);
+  const rounded = positions.map((r) => [Number(r[0].toFixed(4)), ...r.slice(1)]);
+  assert.deepEqual(parsePositionCsv(csv), rounded);
+  assert.deepEqual((await m.listFolder()).map((f) => f.file), ['alps_1_virtual.csv']);
+  const folderId = 'f:alps_1_virtual.csv';
+  assert.equal((await m.getSession(folderId)).file, file);
+  assert.deepEqual(await m.getSamples(folderId, 'pos'), rounded);
+  const imported = await m.importFromFolder(folderId);
+  assert.deepEqual(await inner.getSamples(imported, 'pos'), rounded);
+  const restored = new MemoryDb();
+  await importBackup(restored, await (await exportBackup(inner)).text());
+  assert.deepEqual(await restored.getSamples(id, 'pos'), positions);
+  assert.deepEqual(await restored.getSamples(id), [[t, 12, 13, 0, 0, 0]]);
+  assert.deepEqual(parsePositionCsv(kindToCsv('pos', { started: 1 }, [[1, null, null, null, null, null, null, null]])), [[1, null, null, null, null, null, null, null]]);
+  assert.throws(() => parsePositionCsv('epoch,reported_x\n1,2'), /position trace/);
 });
 
 test('persistence request handles missing and granted storage', async () => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGcode, posAt, motionAt } from '../docs/js/gcode.js';
-import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, loadColumns, percentile } from '../docs/js/sync.js';
+import { parseGcode, posAt, motionAt, positionAtFile } from '../docs/js/gcode.js';
+import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, reportedPoses, fileProgressSync, loadColumns, percentile } from '../docs/js/sync.js';
 import { fitCalibration, toUnits, estimateCountsPerGram, isCalibrated, DEFAULT_CALIB, VOLTS_PER_COUNT_G1 } from '../docs/js/calib.js';
 import { MemoryDb } from '../docs/js/db.js';
 
@@ -39,6 +39,74 @@ test('arcs are linearised and end exactly at the target', () => {
   const g = parseGcode('G90\nM83\nG1 X10 Y0\nG3 X0 Y10 I-10 J0 E1\n');
   assert.ok(g.n > 20);
   assert.ok(Math.abs(g.x1[g.n - 1]) < 1e-6 && Math.abs(g.y1[g.n - 1] - 10) < 1e-6);
+});
+
+test('virtual positions follow complete UTF-8 byte-indexed commands and coordinate modes', () => {
+  const lines = ['\uFEFF; caf\u00e9', 'G90', 'G1 X10 Y20 Z1', 'G91', 'G1 X5 Y-2 Z0.2', 'G92 X0', 'G1 X2', 'G28 X', '; tail'];
+  const text = lines.join('\r\n'), g = parseGcode(text);
+  const end = (i) => new TextEncoder().encode(lines.slice(0, i + 1).join('\r\n') + '\r\n').length;
+  assert.equal(g.fileSize, new TextEncoder().encode(text).length);
+  assert.deepEqual(positionAtFile(g, end(2) - 1).xyz, [0, 0, 0]);
+  assert.deepEqual(positionAtFile(g, end(2)).xyz, [10, 20, 1]);
+  assert.deepEqual(positionAtFile(g, end(4)).xyz.slice(0, 2), [15, 18]);
+  assert.ok(Math.abs(positionAtFile(g, end(4)).xyz[2] - 1.2) < 1e-6);
+  assert.equal(positionAtFile(g, end(5)).xyz[0], 0);
+  assert.equal(positionAtFile(g, end(6)).xyz[0], 2);
+  assert.deepEqual(positionAtFile(g, g.fileSize).xyz.slice(0, 2), [0, 18], 'axis-specific homing preserves Y');
+  assert.equal(positionAtFile(g, -1), null);
+  assert.equal(positionAtFile(g, g.fileSize + 1), null);
+});
+
+test('a virtual arc endpoint includes the whole arc and dwell advances only time', () => {
+  const prefix = 'G1 X10 Y0\nG3 X0 Y10 I-10 J0\n';
+  const g = parseGcode(prefix + 'G4 P2000\n; end\n');
+  const arc = positionAtFile(g, prefix.length);
+  assert.deepEqual(arc.xyz, [0, 10, 0]);
+  assert.equal(arc.index, g.n - 2);
+  assert.deepEqual(positionAtFile(g, g.fileSize).xyz, arc.xyz);
+  assert.ok(Math.abs(positionAtFile(g, g.fileSize).time - arc.time - 2) < 1e-6);
+});
+
+test('file progress aligns virtual XYZ despite constant reported coordinates and retains holds', () => {
+  const lines = ['G1 X10 F600\n', 'G1 X20\n', 'G1 X30\n'];
+  const g = parseGcode(lines.join('')), session = { started: 100, file: 'folder/part.gcode' };
+  const row = (t, bytes) => [t, 0, 0, 0, bytes, g.fileSize, session.file, 'printing'];
+  const rows = [row(100, 0), row(101, lines[0].length), row(110, lines[0].length),
+    row(111, lines[0].length + lines[1].length), row(112, g.fileSize)];
+  assert.equal(reportedPoses(rows, session).n, 1);
+  const { map, poses } = fileProgressSync(g, rows, session, 'part.gcode');
+  assert.deepEqual(Array.from(poses.x), [0, 10, 10, 20, 30]);
+  assert.equal(map.toGcode(5), g.t0[1], 'hold does not advance virtual path');
+  assert.equal(map.toSession(g.t0[1]), 10, 'move after hold starts at resume');
+  assert.equal(map.toSession(g.totalTime), 12);
+  assert.equal(map.toGcode(11), g.t0[2]);
+});
+
+test('virtual alignment rejects missing progress, wrong files, size changes and rewinds', () => {
+  const g = parseGcode('G1 X10\nG1 X20\n'), session = { started: 100, file: 'part.gcode' };
+  const row = (t, bytes) => [t, 0, 0, 0, bytes, g.fileSize, session.file, 'printing'];
+  const rows = [row(100, 0), row(101, g.fileSize)];
+  assert.throws(() => fileProgressSync(g, [], session, 'part.gcode'), /No recorded file progress/);
+  assert.throws(() => fileProgressSync(g, rows, session, 'different.gcode'), /original G-code/);
+  assert.throws(() => fileProgressSync(parseGcode('G1 X100\n'), rows, session, 'part.gcode'), /byte size/);
+  assert.throws(() => fileProgressSync(g, [row(100, g.fileSize), row(101, 0)], session, 'part.gcode'), /backwards/);
+  assert.throws(() => fileProgressSync(g, [row(100, 0), row(101, 0)], session, 'part.gcode'), /Insufficient/);
+  assert.throws(() => fileProgressSync(g, [row(100, 0), row(101, g.fileSize + 1)], session, 'part.gcode'), /outside/);
+});
+
+test('partial virtual recordings leave unobserved segments unavailable', () => {
+  const first = 'G1 X10 F600\n', second = 'G1 X20\n', g = parseGcode(first + second + 'G1 X30\n');
+  const session = { started: 100, file: 'part.gcode' };
+  const rows = [
+    [100, 0, 0, 0, first.length, g.fileSize, session.file, 'printing'],
+    [101, 0, 0, 0, first.length + second.length, g.fileSize, session.file, 'printing'],
+  ];
+  const { map } = fileProgressSync(g, rows, session, 'part.gcode');
+  const cols = { n: 31, t: Array.from({ length: 31 }, (_, i) => -1 + i / 10), filt: new Float32Array(31).fill(42) };
+  const a = aggregate(g, map, cols);
+  assert.ok(Number.isNaN(a.mean[0]));
+  assert.equal(a.mean[1], 42);
+  assert.ok(Number.isNaN(a.mean[2]));
 });
 
 test('dwell and retract add time without geometry', () => {

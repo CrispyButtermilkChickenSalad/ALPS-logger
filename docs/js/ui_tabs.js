@@ -1,5 +1,5 @@
 import { parseGcode, motionAt } from './gcode.js';
-import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, loadColumns, percentile, medianOf } from './sync.js';
+import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, reportedPoses, fileProgressSync, loadColumns, percentile, medianOf } from './sync.js';
 import { Viewer, toBins, gradientCss } from './viewer3d.js';
 import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
@@ -12,8 +12,9 @@ const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : 
 
 export function initTabs({ db, live }) {
   let calib = loadCalib(localStorage);
-  const S = { id: null, session: null, cols: null, poses: null, g: null, map: null, agg: null, aggSignal: null, autoTare: NaN };
+  const S = { id: null, session: null, cols: null, poses: null, positions: [], g: null, gName: '', map: null, agg: null, aggSignal: null, autoTare: NaN };
   let viewer = null, pa = null;
+  let fitRevision = 0, sessionRevision = 0;
 
   // ---- tabs -------------------------------------------------------------------------
   const show = (name) => {
@@ -29,25 +30,42 @@ export function initTabs({ db, live }) {
   // ---- G-code tab ---------------------------------------------------------------------
   async function refreshSessions() { await fillSessionSelect($('gSession'), db); }
   const setSync = (txt, cls = '') => { $('gSync').textContent = txt; $('gSync').className = 'pill ' + cls; };
+  if (localStorage.getItem('gPositionSource') === 'virtual') $('gPositionSource').value = 'virtual';
+  const positionSourceUi = () => { $('gAuto').textContent = $('gPositionSource').value === 'virtual' ? 'Align from file progress' : 'Auto-fit from positions'; };
+  positionSourceUi();
+  $('gPositionSource').onchange = () => {
+    fitRevision++;
+    localStorage.setItem('gPositionSource', $('gPositionSource').value);
+    positionSourceUi(); S.map = S.agg = null;
+    if (S.g && S.cols) runAuto(true); else { setSync('choose a session and G-code to align'); recolor(); }
+  };
 
   $('gSession').onchange = async () => {
+    fitRevision++;
+    const revision = ++sessionRevision;
     const id = parseSessionId($('gSession').value);
     S.id = id || null; S.session = S.cols = S.poses = S.map = S.agg = null;
+    S.positions = [];
     if (!id) return recolor();
     setSync('loading session…');
     try {
-      S.session = await db.getSession(id);
-      S.cols = await loadColumns(db, id, S.session);
-    } catch (e) { setSync(e.message, 'bad'); return recolor(); }
-    S.poses = extractPoses(S.cols);
-    setSync((S.cols.fromEnv ? 'using summary trace (' + S.cols.n + ' buckets); ' : '') + (S.poses.n >= 20 ? `${S.poses.n} distinct positions` : 'insufficient changing positions: fit endpoints or use manual timing'), S.poses.n >= 20 ? '' : 'bad');
+      const session = await db.getSession(id);
+      const positions = [];
+      const [cols] = await Promise.all([loadColumns(db, id, session), db.scanSamples(id, (rows) => { for (const row of rows) positions.push(row); }, 'pos')]);
+      if (revision !== sessionRevision) return;
+      S.session = session; S.cols = cols; S.positions = positions;
+    } catch (e) { if (revision === sessionRevision) { setSync(e.message, 'bad'); recolor(); } return; }
+    S.poses = S.positions.length ? reportedPoses(S.positions, S.session) : extractPoses(S.cols);
+    setSync(`${S.poses.n} distinct reported positions; ${S.positions.filter((r) => r[4] != null && r[5] > 0).length} file-progress snapshots`);
     if (S.g) await runAuto(true); else recolor();
   };
 
   async function loadGcodeText(text, name) {
+    fitRevision++;
     $('gInfo').textContent = 'parsing…';
     await new Promise((r) => setTimeout(r));
     S.g = parseGcode(text);
+    S.gName = name;
     const g = S.g;
     $('gInfo').textContent = `${name}: ${g.nExtrude} extrusion segments, ${g.layerStart.length} layers, est. ${(g.totalTime / 60).toFixed(1)} min`;
     const mx = Math.max(0, g.layerStart.length - 1);
@@ -57,7 +75,11 @@ export function initTabs({ db, live }) {
     S.map = S.agg = null;
     if (S.cols) await runAuto(true); else recolor();
   }
-  $('gFile').onchange = async (e) => { const f = e.target.files[0]; if (f) loadGcodeText(await f.text(), f.name).catch((x) => alert(x.message)); };
+  $('gFile').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try { await loadGcodeText(new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }).decode(await f.arrayBuffer()), f.name); }
+    catch (x) { alert(x.message); }
+  };
   $('gFetch').onclick = async () => {
     const url = $('mrUrl').value.trim();
     const name = (S.session && S.session.file) || prompt('G-code file name on Moonraker (e.g. part.gcode)');
@@ -70,16 +92,31 @@ export function initTabs({ db, live }) {
 
   async function runAuto(silent) {
     if (!S.g || !S.cols) return;
-    if (S.poses.n < 20) { if (!silent) alert('This session has insufficient changing toolhead positions. Fit session start/end or use manual offset/scale.'); return recolor(); }
-    setSync('fitting…');
-    await new Promise((r) => setTimeout(r, 30));
-    const r = autoSync(S.g, S.poses);
-    if (!r) { S.map = null; setSync('auto-fit failed: use manual offset', 'bad'); return recolor(); }
+    const revision = ++fitRevision;
+    S.map = S.agg = null;
+    let r, message;
+    if ($('gPositionSource').value === 'virtual') {
+      try { r = fileProgressSync(S.g, S.positions, S.session, S.gName); }
+      catch (e) { setSync(e.message, 'bad'); return recolor(); }
+      message = `virtual alignment: ${r.poses.n} file-progress snapshots (parsing, not physical motion)`;
+    } else {
+      if (S.poses.n < 20) {
+        setSync('Insufficient changing reported positions. Choose virtual G-code if file progress was recorded, or fit endpoints/manual timing.', 'bad');
+        if (!silent) alert($('gSync').textContent);
+        return recolor();
+      }
+      setSync('fitting…');
+      await new Promise((r) => setTimeout(r, 30));
+      if (revision !== fitRevision) return;
+      r = autoSync(S.g, S.poses);
+      if (!r) { setSync('auto-fit failed: use manual offset', 'bad'); return recolor(); }
+      message = `reported XYZ: fitted ${r.matched}/${r.windows} windows, rms ${r.rmsMm} mm, print ${(r.printSeconds / 60).toFixed(1)} min`;
+    }
     S.map = r.map;
     const o0 = r.map.toSession(0);
     $('gOff').value = o0.toFixed(1); $('gScale').value = ((r.map.toSession(S.g.totalTime) - o0) / (S.g.totalTime || 1)).toFixed(3);
     syncSliders();
-    setSync(`fitted ${r.matched}/${r.windows} windows, rms ${r.rmsMm} mm, print ${(r.printSeconds / 60).toFixed(1)} min`, 'ok');
+    setSync(message, 'ok');
     S.agg = null; recolor();
   }
   $('gAuto').onclick = () => runAuto(false);

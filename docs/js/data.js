@@ -52,6 +52,12 @@ export function exportMeta(session, rows, calib, env = []) {
   return {
     session: { id: session.id, name: session.name, source: session.source, started_epoch: session.started, ended_epoch: session.ended, samples: rows.length },
     capture: session.capture || null,
+    file: session.file || null,
+    positions: {
+      sidecar: '.positions.csv',
+      description: 'Polled reported XYZ and virtual_sdcard file byte offset; derive virtual XYZ using the original G-code, not measured motion.',
+      timing: 'Host poll arrival time. File parsing can lead execution; macros and external motion are not reconstructed.',
+    },
     columns: { raw: 'ADC counts', filtered: 'ADC counts (device filter)', z: 'mm (Moonraker)', x: 'mm', y: 'mm', t_s: 'seconds since session start', epoch: 'host arrival time, Unix seconds' },
     calibration: cal ? {
       unit: calib.unit, counts_per_gram: calib.countsPerGram, tare_counts: exportTare(session, rows, calib, env),
@@ -63,16 +69,19 @@ export function exportMeta(session, rows, calib, env = []) {
 
 // ---- long-print capture exports (envelope / layers / events) ---------------------------------------
 export const KINDS = {
+  pos: { suffix: 'positions', head: ['t_s', 'epoch', 'reported_x', 'reported_y', 'reported_z', 'file_position', 'file_size', 'filename', 'state'], absolute: [] },
   env: { suffix: 'summary', head: ['t_s', 'epoch', 'raw_min', 'raw_mean', 'raw_max', 'raw_std', 'filtered_mean', 'z', 'x', 'y', 'n'], absolute: [2, 3, 4, 6], diff: [5] },
   layer: { suffix: 'layers', head: ['layer', 't_start_s', 't_end_s', 'epoch_start', 'epoch_end', 'z', 'baseline', 'noise_std', 'raw_min', 'raw_max', 'peak_dev', 'events', 'samples'], absolute: [6, 8, 9], diff: [7, 10] },
   evt: { suffix: 'events', head: ['t_s', 'epoch', 'duration_s', 'triggers', 'peak_dev', 'peak_t_s', 'baseline', 'z', 'x', 'y'], absolute: [6], diff: [4] },
 };
 
 const fix = (v, d) => (v == null || !Number.isFinite(v) ? '' : v.toFixed(d));
+const csvCell = (v) => /[",\r\n]/.test(String(v ?? '')) ? '"' + String(v).replace(/"/g, '""') + '"' : v ?? '';
 
 // Maps a stored row to its CSV cells (times as seconds since session start plus epoch).
 function kindCells(kind, s, r) {
   const e = (t) => fix(t - s.started, 4);
+  if (kind === 'pos') return [e(r[0]), fix(r[0], 4), ...r.slice(1).map(csvCell)];
   if (kind === 'env') return [e(r[0]), fix(r[0], 3), r[1], r[2], r[3], r[4], r[5] ?? '', r[6] ?? '', r[7] ?? '', r[8] ?? '', r[9]];
   if (kind === 'layer') return [r[3], e(r[0]), e(r[1]), fix(r[0], 3), fix(r[1], 3), r[2], r[4], r[5], r[6], r[7], r[8], r[9], r[10]];
   return [e(r[0]), fix(r[0], 3), fix(r[1] - r[0], 3), r[2], r[3], e(r[4]), r[5], r[6] ?? '', r[7] ?? '', r[8] ?? ''];

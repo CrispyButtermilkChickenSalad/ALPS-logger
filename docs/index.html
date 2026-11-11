@@ -184,7 +184,7 @@
       <span id="mrState" class="pill">off</span>
       <label title="Stops the screen from sleeping so the tab keeps running during long prints"><input id="wake" type="checkbox"> keep screen awake</label>
     </div>
-    <p class="hint">When enabled, a recording starts and stops automatically with each print and the toolhead Z is logged. Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
+    <p class="hint">When enabled, a recording starts and stops automatically with each print. Reported XYZ and virtual-SD file byte progress are saved together, independently of load-sample capture mode. In the G-code tab, choose reported positions or virtual positions derived from the original file (useful with <code>kinematics: none</code>). Moonraker must list this page's origin in <code>[authorization] cors_domains</code> in <code>moonraker.conf</code>.</p>
   </section>
   <section>
     <h2>Keep your data safe</h2>
@@ -214,6 +214,7 @@
         <span id="gInfo" class="pill">no G-code loaded</span>
       </div>
       <div class="row">
+        <label>Position source <select id="gPositionSource"><option value="reported">Klipper reported XYZ</option><option value="virtual">Virtual G-code (file progress)</option></select></label>
         <button id="gAuto" class="primary">Auto-fit from positions</button>
         <button id="gEndpoints">Fit session start/end</button>
         <label>Offset s <input id="gOff" type="number" step="0.1" value="0"></label>
@@ -227,7 +228,8 @@
       </div>
       <canvas id="gFit" style="width:100%;height:150px;cursor:ew-resize"></canvas>
       <p class="hint">Blue = pressure log, orange band = where the G-code (and its layer starts) lands on the log. Drag the sliders or drag the graph sideways to shift, then scale until layer starts line up with the features in the trace. The 3D view updates as you adjust.</p>
-      <p class="hint">Position auto-fit needs changing Moonraker XYZ positions. Fit session start/end maps recording boundaries to the estimated G-code timeline without positions; it is an approximation, not proof of alignment. Heating, homing, pauses, acceleration, and recording before or after the print can shift intermediate moves. Adjust offset and scale manually where needed.</p>
+      <p class="hint">Reported-position auto-fit needs changing Moonraker XYZ. Virtual G-code uses recorded file byte offsets to derive intended XYZ and align the preview even when reported XYZ is constant; load the original, unmodified file. This tracks parsing, not physical execution: queued moves can lead actual motion, polling skips short moves, and macros, external motion and custom kinematics are not reconstructed. Only the observed file-progress range is coloured. Both sources are kept, so you can switch after recording. Older sessions without file progress cannot use virtual alignment.</p>
+      <p class="hint">Fit session start/end maps recording boundaries to the estimated G-code timeline without positions; it is an approximation, not proof of alignment. Heating, homing, pauses, acceleration, and recording before or after the print can shift intermediate moves. Adjust offset and scale manually where needed.</p>
     </section>
     <section>
       <h2>Preview</h2>

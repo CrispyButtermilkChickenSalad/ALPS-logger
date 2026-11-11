@@ -1,17 +1,18 @@
 // Session <-> G-code synchronisation: time mapping, automatic alignment from logged toolhead positions,
 // and per-segment aggregation of ALPS samples.
-import { posAt } from './gcode.js';
+import { posAt, positionAtFile } from './gcode.js';
 
-// Piecewise-linear monotone map between gcode time and session time (seconds). Slope is 1 outside the anchors.
+// Monotone map between G-code and session seconds. Repeated G-code anchors represent file-progress holds.
+// At a hold, toSession() chooses its end. Slope is 1 outside the anchors.
 export class TimeMap {
-  constructor(g, s) { this.g = Float64Array.from(g); this.s = Float64Array.from(s); }
+  constructor(g, s, { coverage = null } = {}) { this.g = Float64Array.from(g); this.s = Float64Array.from(s); this.coverage = coverage; }
   static linear(offset, scale, total) {
     const T = total > 0 ? total : 1;
     return new TimeMap([0, T], [offset, offset + scale * T]);
   }
   static _interp(xs, ys, x) {
     const n = xs.length;
-    if (x <= xs[0]) return ys[0] + (x - xs[0]);
+    if (x < xs[0]) return ys[0] + (x - xs[0]);
     if (x >= xs[n - 1]) return ys[n - 1] + (x - xs[n - 1]);
     let lo = 0, hi = n - 1;
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= x) lo = m; else hi = m; }
@@ -93,6 +94,43 @@ export function extractPoses(cols) {
     t.push(cols.t[i]); x.push(a); y.push(b); z.push(d);
   }
   return { n: t.length, t: Float64Array.from(t), x: Float64Array.from(x), y: Float64Array.from(y), z: Float64Array.from(z) };
+}
+
+// Position trace rows: [epoch, reportedX, reportedY, reportedZ, filePosition, fileSize, filename, state].
+export function reportedPoses(rows, session) {
+  const nz = (v) => v == null ? NaN : v;
+  return extractPoses({
+    n: rows.length, t: rows.map((r) => r[0] - session.started),
+    x: rows.map((r) => nz(r[1])), y: rows.map((r) => nz(r[2])), z: rows.map((r) => nz(r[3])),
+  });
+}
+
+export function fileProgressSync(g, rows, session, filename) {
+  const valid = rows.filter((r) => r[6] && ['printing', 'paused', 'complete'].includes(r[7]) &&
+    Number.isSafeInteger(r[4]) && r[4] >= 0 && Number.isSafeInteger(r[5]) && r[5] > 0);
+  if (!valid.length) throw new Error('No recorded file progress. Record with Moonraker enabled; older sessions and streamed G-code cannot use virtual alignment.');
+  const expected = session.file || valid[0][6];
+  if (filename.split('/').pop() !== expected.split('/').pop()) throw new Error('Virtual alignment needs the original G-code file: ' + expected);
+  const matching = valid.filter((r) => r[6] === expected);
+  if (!matching.length) throw new Error('No recorded file progress for ' + expected);
+  if (matching.some((r) => r[5] !== g.fileSize)) throw new Error('G-code byte size differs from the recorded job. Load the original, unmodified file.');
+  const gs = [], ss = [], x = [], y = [], z = [];
+  let prevBytes = -1;
+  for (const r of matching) {
+    if (r[4] < prevBytes) throw new Error('Recorded file position moved backwards; virtual alignment cannot map a restarted or rewound job.');
+    prevBytes = r[4];
+    const p = positionAtFile(g, r[4]), t = r[0] - session.started;
+    if (!p) throw new Error('Recorded file position is outside the G-code file.');
+    if (!Number.isFinite(t) || (ss.length && t < ss[ss.length - 1])) throw new Error('Recorded position timestamps are not increasing.');
+    if (ss.length && t === ss[ss.length - 1]) continue;
+    gs.push(p.time); ss.push(t); x.push(p.xyz[0]); y.push(p.xyz[1]); z.push(p.xyz[2]);
+  }
+  if (gs.length < 2 || gs[0] === gs[gs.length - 1]) throw new Error('Insufficient changing file progress to align this session.');
+  const coverage = [gs[0], gs[gs.length - 1]];
+  return {
+    map: new TimeMap(gs, ss, { coverage }),
+    poses: { n: ss.length, t: Float64Array.from(ss), x: Float32Array.from(x), y: Float32Array.from(y), z: Float32Array.from(z) },
+  };
 }
 
 // ---- automatic alignment -----------------------------------------------------------------------
@@ -218,7 +256,10 @@ export function aggregate(g, map, cols, signal = 'filt') {
   let j = 0;
   for (let i = 0; i < n; i++) {
     if (g.flags[i] & 4) continue;
-    const s0 = map.toSession(g.t0[i]), s1 = map.toSession(g.t0[i] + g.dur[i]);
+    // Use planner boundaries for file anchors: rounded durations can fall on the wrong side of a hold.
+    const end = map.coverage ? (i + 1 < n ? g.t0[i + 1] : g.totalTime) : g.t0[i] + g.dur[i];
+    if (map.coverage && (g.t0[i] < map.coverage[0] - 1e-6 || end > map.coverage[1] + 1e-6)) continue;
+    const s0 = map.toSession(g.t0[i]), s1 = map.toSession(end);
     const width = cols.fromEnv ? cols.bucketS : 0;
     if (cols.fromEnv && !(width > 0)) continue;
     if (!cols.fromEnv && (s0 < T[0] - 1e-6 || s1 > T[m - 1] + 1e-6)) continue;

@@ -69,9 +69,12 @@ export class Recorder {
   }
 
   // ---- moonraker callback
-  onPrintUpdate(state, filename, z, ok, x = null, y = null) {
+  onPrintUpdate(state, filename, z, ok, x = null, y = null, progress = {}) {
     this.moonrakerOk = ok;
-    if (!ok) { this._changed(); return; }
+    if (!ok) {
+      this._recordPosition([this.now(), null, null, null, null, null, null, null]);
+      this._changed(); return;
+    }
     this.z = z;
     this.x = x;
     this.y = y;
@@ -79,10 +82,18 @@ export class Recorder {
     this.printState = state || 'unknown';
     if (ACTIVE.has(this.printState) && !this.session) {
       this._start(this.filename || 'print', 'moonraker', true);
-    } else if (END.has(this.printState) && this.session && this.session.auto) {
+    }
+    this._recordPosition([this.now(), x, y, z, progress.filePosition ?? null, progress.fileSize ?? null, this.filename, this.printState]);
+    if (END.has(this.printState) && this.session && this.session.auto) {
       this.stopSession();
     }
     this._changed();
+  }
+
+  _recordPosition(row) {
+    if (!this.session) return;
+    this.session.pending.pos.push(row);
+    if (row[0] - this._lastFlush >= this.flushInterval) this._flush(this.session);
   }
 
   // ---- sessions
@@ -92,10 +103,10 @@ export class Recorder {
   }
 
   _start(name, source, auto) {
-    const s = { id: null, name, auto, pending: { raw: [], env: [], layer: [], evt: [] }, chain: Promise.resolve() };
+    const s = { id: null, name, auto, pending: { raw: [], env: [], layer: [], evt: [], pos: [] }, chain: Promise.resolve() };
     s.cap = new Capture(this.capture, (kind, row) => s.pending[kind].push(row));
     const meta = { capture: JSON.parse(JSON.stringify(this.capture)) };
-    if (source === 'moonraker' && this.filename) meta.file = this.filename;
+    if (this.moonrakerOk && this.filename) meta.file = this.filename;
     s.ready = Promise.resolve(this.db.startSession(name, source, meta)).then((id) => { s.id = id; });
     s.ready.catch((e) => this.log('db error: ' + e.message));
     this.session = s;
@@ -116,7 +127,7 @@ export class Recorder {
     this._lastFlush = this.now();
     const batches = Object.entries(s.pending).filter(([, rows]) => rows.length);
     if (!batches.length) return s.chain;
-    s.pending = { raw: [], env: [], layer: [], evt: [] };
+    s.pending = { raw: [], env: [], layer: [], evt: [], pos: [] };
     s.chain = s.chain
       .then(() => s.ready)
       .then(async () => { for (const [kind, rows] of batches) await (kind === 'raw' ? this.db.addSamples(s.id, rows) : this.db.addSamples(s.id, rows, kind)); })

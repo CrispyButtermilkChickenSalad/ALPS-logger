@@ -19,6 +19,10 @@ export function parseGcode(text, opts = {}) {
   const ex = new Grow(Float32Array), ey = new Grow(Float32Array), ez = new Grow(Float32Array);
   const sa = new Grow(Float32Array), ea = new Grow(Float32Array);
   const fl = new Grow(Uint8Array), vc = new Grow(Float32Array), ac = new Grow(Float32Array), fx = new Grow(Float32Array);
+  const fileEnd = new Grow(Float64Array), fileSegment = new Grow(Int32Array);
+  const fileX = new Grow(Float32Array), fileY = new Grow(Float32Array), fileZ = new Grow(Float32Array);
+  const encoder = new TextEncoder();
+  let fileSize = 0;
   let pa = 0, na = 0, px = 0, py = 0, pz = 0, pe = 0, abs = true, eAbs = true, f = o.defaultSpeed * 60, accel = o.accel, spd = 1;
 
   const push = (x0, y0, z0, x1, y1, z1, flag, v, fixed) => {
@@ -45,6 +49,8 @@ export function parseGcode(text, opts = {}) {
     let nl = text.indexOf('\n', pos);
     if (nl < 0) nl = text.length;
     let line = text.slice(pos, nl);
+    const raw = text.slice(pos, nl < text.length ? nl + 1 : nl);
+    fileSize += /[^\x00-\x7f]/.test(raw) ? encoder.encode(raw).length : raw.length;
     pos = nl + 1;
     const sc = line.indexOf(';');
     if (sc >= 0) line = line.slice(0, sc);
@@ -57,6 +63,7 @@ export function parseGcode(text, opts = {}) {
     re.lastIndex = m[0].length;
     let a;
     while ((a = re.exec(line))) w[a[1].toUpperCase()] = parseFloat(a[2]);
+    const oldN = sx.n, oldX = px, oldY = py, oldZ = pz;
 
     switch (code) {
       case 'G0': case 'G1': case 'G2': case 'G3': {
@@ -90,10 +97,11 @@ export function parseGcode(text, opts = {}) {
         break;
       }
       case 'G28': {
-        const any = 'X' in w || 'Y' in w || 'Z' in w;
-        if (!any || 'X' in w) px = 0;
-        if (!any || 'Y' in w) py = 0;
-        if (!any || 'Z' in w) pz = 0;
+        const axes = line.slice(m[0].length).toUpperCase();
+        const any = /[XYZ]/.test(axes);
+        if (!any || axes.includes('X')) px = 0;
+        if (!any || axes.includes('Y')) py = 0;
+        if (!any || axes.includes('Z')) pz = 0;
         break;
       }
       case 'G90': abs = true; break;
@@ -111,17 +119,37 @@ export function parseGcode(text, opts = {}) {
       case 'M220': if (w.S > 0) spd = w.S / 100; break;
       default:
     }
+    if (sx.n !== oldN || px !== oldX || py !== oldY || pz !== oldZ) {
+      fileEnd.push(fileSize); fileSegment.push(sx.n - 1);
+      fileX.push(px); fileY.push(py); fileZ.push(pz);
+    }
   }
 
   const g = {
     n: sx.n,
     x0: sx.done(), y0: sy.done(), z0: sz.done(), x1: ex.done(), y1: ey.done(), z1: ez.done(),
     flags: fl.done(), vc: vc.done(), accel: ac.done(),     fixed: fx.done(), a0: sa.done(), a1: ea.done(),
+    fileSize, fileEnd: fileEnd.done(), fileSegment: fileSegment.done(),
+    fileX: fileX.done(), fileY: fileY.done(), fileZ: fileZ.done(),
   };
   planTimes(g, o);
   findLayers(g);
   findBounds(g);
   return g;
+}
+
+// Last fully parsed command at a virtual_sdcard byte offset, not an executed physical pose.
+export function positionAtFile(g, bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > g.fileSize) return null;
+  let lo = 0, hi = g.fileEnd.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (g.fileEnd[mid] <= bytes) lo = mid + 1; else hi = mid;
+  }
+  const k = lo - 1;
+  if (k < 0) return { xyz: [0, 0, 0], time: 0, index: -1 };
+  const i = g.fileSegment[k];
+  return { xyz: [g.fileX[k], g.fileY[k], g.fileZ[k]], time: i < 0 ? 0 : i + 1 < g.n ? g.t0[i + 1] : g.totalTime, index: i };
 }
 
 // Look-ahead planner with Klipper's junction-deviation corner model. Fills g.t0 / g.dur / g.totalTime.
@@ -240,5 +268,5 @@ export function motionAt(g, tg) {
   const length = Math.hypot(...delta);
   const span = g.dur[i] > 0 ? Math.min(1, Math.max(0, (time - g.t0[i]) / g.dur[i])) : 1;
   const a = g.a0[i] + (g.a1[i] - g.a0[i]) * span;
-  return { index: i, a, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
+  return { index: i, fraction: span, a, xyz, direction: length > 0 ? delta.map((v) => v / length) : null, extruding: !!(g.flags[i] & EXTRUDE) };
 }

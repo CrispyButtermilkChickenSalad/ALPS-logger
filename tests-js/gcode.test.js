@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGcode, posAt, motionAt } from '../docs/js/gcode.js';
-import { TimeMap, autoSync, endpointSync, aggregate, extractPoses, loadColumns, percentile } from '../docs/js/sync.js';
+import { parseGcode, posAt, motionAt, positionAtFile } from '../docs/js/gcode.js';
+import { TimeMap, autoSync, endpointSync, aggregate, projectCurve, curveValueAt, extractPoses, reportedPoses, fileProgressSync, loadColumns, percentile } from '../docs/js/sync.js';
 import { fitCalibration, toUnits, estimateCountsPerGram, isCalibrated, DEFAULT_CALIB, VOLTS_PER_COUNT_G1 } from '../docs/js/calib.js';
 import { MemoryDb } from '../docs/js/db.js';
 
@@ -39,6 +39,74 @@ test('arcs are linearised and end exactly at the target', () => {
   const g = parseGcode('G90\nM83\nG1 X10 Y0\nG3 X0 Y10 I-10 J0 E1\n');
   assert.ok(g.n > 20);
   assert.ok(Math.abs(g.x1[g.n - 1]) < 1e-6 && Math.abs(g.y1[g.n - 1] - 10) < 1e-6);
+});
+
+test('virtual positions follow complete UTF-8 byte-indexed commands and coordinate modes', () => {
+  const lines = ['\uFEFF; caf\u00e9', 'G90', 'G1 X10 Y20 Z1', 'G91', 'G1 X5 Y-2 Z0.2', 'G92 X0', 'G1 X2', 'G28 X', '; tail'];
+  const text = lines.join('\r\n'), g = parseGcode(text);
+  const end = (i) => new TextEncoder().encode(lines.slice(0, i + 1).join('\r\n') + '\r\n').length;
+  assert.equal(g.fileSize, new TextEncoder().encode(text).length);
+  assert.deepEqual(positionAtFile(g, end(2) - 1).xyz, [0, 0, 0]);
+  assert.deepEqual(positionAtFile(g, end(2)).xyz, [10, 20, 1]);
+  assert.deepEqual(positionAtFile(g, end(4)).xyz.slice(0, 2), [15, 18]);
+  assert.ok(Math.abs(positionAtFile(g, end(4)).xyz[2] - 1.2) < 1e-6);
+  assert.equal(positionAtFile(g, end(5)).xyz[0], 0);
+  assert.equal(positionAtFile(g, end(6)).xyz[0], 2);
+  assert.deepEqual(positionAtFile(g, g.fileSize).xyz.slice(0, 2), [0, 18], 'axis-specific homing preserves Y');
+  assert.equal(positionAtFile(g, -1), null);
+  assert.equal(positionAtFile(g, g.fileSize + 1), null);
+});
+
+test('a virtual arc endpoint includes the whole arc and dwell advances only time', () => {
+  const prefix = 'G1 X10 Y0\nG3 X0 Y10 I-10 J0\n';
+  const g = parseGcode(prefix + 'G4 P2000\n; end\n');
+  const arc = positionAtFile(g, prefix.length);
+  assert.deepEqual(arc.xyz, [0, 10, 0]);
+  assert.equal(arc.index, g.n - 2);
+  assert.deepEqual(positionAtFile(g, g.fileSize).xyz, arc.xyz);
+  assert.ok(Math.abs(positionAtFile(g, g.fileSize).time - arc.time - 2) < 1e-6);
+});
+
+test('file progress aligns virtual XYZ despite constant reported coordinates and retains holds', () => {
+  const lines = ['G1 X10 F600\n', 'G1 X20\n', 'G1 X30\n'];
+  const g = parseGcode(lines.join('')), session = { started: 100, file: 'folder/part.gcode' };
+  const row = (t, bytes) => [t, 0, 0, 0, bytes, g.fileSize, session.file, 'printing'];
+  const rows = [row(100, 0), row(101, lines[0].length), row(110, lines[0].length),
+    row(111, lines[0].length + lines[1].length), row(112, g.fileSize)];
+  assert.equal(reportedPoses(rows, session).n, 1);
+  const { map, poses } = fileProgressSync(g, rows, session, 'part.gcode');
+  assert.deepEqual(Array.from(poses.x), [0, 10, 10, 20, 30]);
+  assert.equal(map.toGcode(5), g.t0[1], 'hold does not advance virtual path');
+  assert.equal(map.toSession(g.t0[1]), 10, 'move after hold starts at resume');
+  assert.equal(map.toSession(g.totalTime), 12);
+  assert.equal(map.toGcode(11), g.t0[2]);
+});
+
+test('virtual alignment rejects missing progress, wrong files, size changes and rewinds', () => {
+  const g = parseGcode('G1 X10\nG1 X20\n'), session = { started: 100, file: 'part.gcode' };
+  const row = (t, bytes) => [t, 0, 0, 0, bytes, g.fileSize, session.file, 'printing'];
+  const rows = [row(100, 0), row(101, g.fileSize)];
+  assert.throws(() => fileProgressSync(g, [], session, 'part.gcode'), /No recorded file progress/);
+  assert.throws(() => fileProgressSync(g, rows, session, 'different.gcode'), /original G-code/);
+  assert.throws(() => fileProgressSync(parseGcode('G1 X100\n'), rows, session, 'part.gcode'), /byte size/);
+  assert.throws(() => fileProgressSync(g, [row(100, g.fileSize), row(101, 0)], session, 'part.gcode'), /backwards/);
+  assert.throws(() => fileProgressSync(g, [row(100, 0), row(101, 0)], session, 'part.gcode'), /Insufficient/);
+  assert.throws(() => fileProgressSync(g, [row(100, 0), row(101, g.fileSize + 1)], session, 'part.gcode'), /outside/);
+});
+
+test('partial virtual recordings leave unobserved segments unavailable', () => {
+  const first = 'G1 X10 F600\n', second = 'G1 X20\n', g = parseGcode(first + second + 'G1 X30\n');
+  const session = { started: 100, file: 'part.gcode' };
+  const rows = [
+    [100, 0, 0, 0, first.length, g.fileSize, session.file, 'printing'],
+    [101, 0, 0, 0, first.length + second.length, g.fileSize, session.file, 'printing'],
+  ];
+  const { map } = fileProgressSync(g, rows, session, 'part.gcode');
+  const cols = { n: 31, t: Array.from({ length: 31 }, (_, i) => -1 + i / 10), filt: new Float32Array(31).fill(42) };
+  const a = aggregate(g, map, cols);
+  assert.ok(Number.isNaN(a.mean[0]));
+  assert.equal(a.mean[1], 42);
+  assert.ok(Number.isNaN(a.mean[2]));
 });
 
 test('dwell and retract add time without geometry', () => {
@@ -178,6 +246,85 @@ test('aggregate assigns samples to segments through the time map', async () => {
   const a = aggregate(g, map, cols, 'filt');
   assert.ok(a.mean[0] < 200 && a.mean[1] > 400, `${a.mean[0]} ${a.mean[1]}`);
   assert.ok(Number.isNaN(aggregate(g, TimeMap.linear(5000, 1, g.totalTime), cols).mean[0]));
+});
+
+test('full curve preserves individual peaks and variation within one move', () => {
+  const g = { n: 1, flags: [1], t0: [0], dur: [10], totalTime: 10 };
+  const t = Array.from({ length: 101 }, (_, i) => i / 10);
+  const filt = t.map((_, i) => i === 50 ? 1000 : i < 50 ? 10 : 30);
+  const cols = { n: t.length, t, filt, raw: filt.map((v) => v * 2) }, map = TimeMap.linear(0, 1, 10);
+  const curve = projectCurve(g, map, cols);
+  assert.equal(curve.samples, 101);
+  assert.equal(curve.n, 101);
+  assert.deepEqual(Array.from(curve.offsets), [0, 101]);
+  assert.equal(curve.f0[0], 0);
+  assert.equal(curve.f1[curve.n - 1], 1);
+  assert.equal(curveValueAt(curve, 0, 0.25), 10);
+  assert.equal(curveValueAt(curve, 0, 0.5), 1000);
+  assert.equal(curveValueAt(curve, 0, 0.75), 30);
+  assert.ok(aggregate(g, map, cols).max[0] > aggregate(g, map, cols).mean[0]);
+  assert.equal(curveValueAt(projectCurve(g, map, cols, 'raw'), 0, 0.5), 2000);
+});
+
+test('full curve keeps raw event windows without bridging missing intervals or using summaries', async () => {
+  const db = new MemoryDb(), session = { started: 100, ended: 104, capture: { mode: 'events', bucketS: 1 } };
+  const id = await db.importSession(session, [0, 0.01, 0.02, 3, 3.01, 3.02].map((t) => [100 + t, 10, 20, 0, 0, 0]), {
+    env: [[100, 1, 1000, 2000, 0, 1000, 0, 0, 0, 100]],
+  });
+  const cols = await loadColumns(db, id, session, { preferRaw: true });
+  assert.equal(cols.fromEnv, undefined);
+  const g = { n: 1, flags: [1], t0: [0], dur: [4], totalTime: 4 }, map = TimeMap.linear(0, 1, 4);
+  const curve = projectCurve(g, map, cols);
+  assert.equal(curveValueAt(curve, 0, 0.01 / 4), 20);
+  assert.ok(Number.isNaN(curveValueAt(curve, 0, 1.5 / 4)));
+  assert.equal(curveValueAt(curve, 0, 3.01 / 4), 20);
+  assert.ok(Number.isNaN(curveValueAt(curve, 0, 3.5 / 4)));
+  assert.throws(() => projectCurve(g, map, { ...cols, fromEnv: true }), /not summary buckets/);
+  const gaps = projectCurve(g, map, { n: 9, t: [0, 0.01, 0.02, 0.059, 0.069, 0.079, 0.12, 0.13, 0.14], filt: new Float32Array(9).fill(10) });
+  assert.equal(curveValueAt(gaps, 0, 0.04 / 4), 10, 'a gap below four typical intervals is supported');
+  assert.ok(Number.isNaN(curveValueAt(gaps, 0, 0.1 / 4)), 'a gap above four typical intervals stays grey');
+  const slow = projectCurve(g, map, { n: 4, t: [0, 0.8, 1.9, 2.7], filt: [1, 2, 3, 4] });
+  assert.ok(Number.isNaN(curveValueAt(slow, 0, 1.3 / 4)), 'even slow capture does not bridge gaps above one second');
+});
+
+test('full curve follows non-linear alignment, splits moves, and leaves dwells and holds unmapped', () => {
+  const g = { n: 3, flags: [1, 4, 1], t0: [0, 1, 2], dur: [1, 1, 1], totalTime: 3 };
+  const map = new TimeMap([0, 1, 1, 2, 3], [0, 2, 4, 6, 8]);
+  const t = Array.from({ length: 81 }, (_, i) => i / 10);
+  const cols = { n: t.length, t, filt: t.map((v) => v > 2 && v < 4 ? 999 : v) };
+  const curve = projectCurve(g, map, cols);
+  assert.equal(curve.offsets[1], curve.offsets[2], 'dwell has no path colour');
+  assert.equal(curveValueAt(curve, 0, 0.5), 1);
+  assert.equal(curveValueAt(curve, 2, 0.5), 7);
+  assert.ok(!curve.values.includes(999), 'samples during a progress hold cannot advance along the path');
+  const adjacent = { n: 2, flags: [1, 1], t0: [0, 1], dur: [1, 1], totalTime: 2 };
+  const crossing = projectCurve(adjacent, TimeMap.linear(0, 1, 2), { n: 4, t: [0, 0.8, 1.6, 2], filt: [1, 10, 20, 30] });
+  assert.equal(curveValueAt(crossing, 0, 0.9), 10);
+  assert.equal(curveValueAt(crossing, 1, 0.1), 10, 'one sample interval is split across the corner');
+});
+
+test('full curve clips virtual coverage and handles coincident or missing sample timestamps explicitly', () => {
+  const g = { n: 1, flags: [1], t0: [0], dur: [10], totalTime: 10 };
+  const cols = { n: 6, t: [0, 2, 2, 4, 6, 10], filt: [1, 2, NaN, 4, 6, 10] };
+  const map = new TimeMap([0, 10], [0, 10], { coverage: [2, 8] });
+  const dense = { n: 101, t: Array.from({ length: 101 }, (_, i) => i / 10), filt: new Float32Array(101).fill(10) };
+  const curve = projectCurve(g, map, dense);
+  assert.ok(Number.isNaN(curveValueAt(curve, 0, 0.1)));
+  assert.equal(curveValueAt(curve, 0, 0.5), 10);
+  assert.ok(Number.isNaN(curveValueAt(curve, 0, 0.9)));
+  assert.doesNotThrow(() => projectCurve(g, map, cols));
+  assert.throws(() => projectCurve(g, map, { ...cols, t: [0, 2, 1, 4, 6, 10] }), /recording order/);
+  assert.throws(() => projectCurve(g, map, { ...cols, t: [0, NaN, 2, 4, 6, 10] }), /finite/);
+});
+
+test('full curve does not cap saved samples at the interactive drawing limit', () => {
+  const n = 100005, g = { n: 1, flags: [1], t0: [0], dur: [1], totalTime: 1 };
+  const t = Float64Array.from({ length: n }, (_, i) => i / (n - 1)), filt = new Float32Array(n).fill(5);
+  filt[n - 2] = 1000;
+  const curve = projectCurve(g, TimeMap.linear(0, 1, 1), { n, t, filt });
+  assert.equal(curve.samples, n);
+  assert.equal(curve.n, n);
+  assert.equal(curve.values[n - 2], 1000);
 });
 
 test('extractPoses keeps only changed positions', () => {

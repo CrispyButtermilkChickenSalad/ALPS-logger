@@ -31,6 +31,37 @@ export async function loadFolderHandle() {
 export const isFolderId = (v) => typeof v === 'string' && v.startsWith('f:');
 export const parseSessionId = (v) => (isFolderId(v) ? v : +v);
 
+function csvRows(text) {
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      if (quoted && text[i + 1] === '"') { cell += '"'; i++; } else quoted = !quoted;
+    } else if (!quoted && (c === ',' || c === '\n')) {
+      row.push(cell.replace(/\r$/, '')); cell = '';
+      if (c === '\n') { rows.push(row); row = []; }
+    } else cell += c;
+  }
+  if (quoted) throw new Error('Unterminated quoted CSV field');
+  if (cell || row.length) { row.push(cell.replace(/\r$/, '')); rows.push(row); }
+  return rows;
+}
+
+export function parsePositionCsv(text) {
+  const [head = [], ...rows] = csvRows(text);
+  const fields = ['epoch', 'reported_x', 'reported_y', 'reported_z', 'file_position', 'file_size', 'filename', 'state'];
+  const indices = fields.map((f) => head.indexOf(f));
+  if (indices.some((i) => i < 0)) throw new Error('Not an ALPS position trace CSV');
+  return rows.filter((r) => r.length >= head.length).map((r) => indices.map((k, i) => {
+    if (i >= 6) return r[k] || null;
+    if (r[k] === '') return null;
+    const v = Number(r[k]);
+    if (!Number.isFinite(v)) throw new Error('Invalid number in ALPS position trace CSV');
+    return v;
+  }));
+}
+
 // Parses an ALPS CSV (header-driven, extra columns such as force_* are ignored) into a session + rows
 // shaped like the browser database: [epoch, raw, filtered, z, x, y].
 export function parseCsv(text, name = 'file.csv') {
@@ -84,7 +115,7 @@ export class MirrorDb {
     if (!this.dir) return [];
     const out = [];
     for await (const [name, h] of this.dir.entries()) {
-      if (h.kind !== 'file' || !/\.csv$/i.test(name) || /\.(env|summary|layers|events)\.csv$/i.test(name)) continue;
+      if (h.kind !== 'file' || !/\.csv$/i.test(name) || /\.(env|summary|layers|events|positions)\.csv$/i.test(name)) continue;
       const f = await h.getFile();
       out.push({ id: 'f:' + name, name: name.replace(/\.csv$/i, ''), file: name, size: f.size, modified: f.lastModified / 1000 });
     }
@@ -94,31 +125,38 @@ export class MirrorDb {
     if (!this.dir) throw new Error('No folder selected');
     const name = id.slice(2);
     const f = await (await this.dir.getFileHandle(name)).getFile();
+    let positionsFile = null;
+    try { positionsFile = await (await this.dir.getFileHandle(name.replace(/\.csv$/i, '.positions.csv'))).getFile(); }
+    catch (e) { if (e.name !== 'NotFoundError') throw e; }
     const c = this.cache.get(id);
-    if (c && c.mod === f.lastModified && c.size === f.size) return c.v;
+    const positionVersion = positionsFile ? `${positionsFile.lastModified}:${positionsFile.size}` : '';
+    if (c && c.mod === f.lastModified && c.size === f.size && c.positionVersion === positionVersion) return c.v;
     const v = parseCsv(await f.text(), name);
-    this.cache.delete(id); this.cache.set(id, { mod: f.lastModified, size: f.size, v });
+    v.positions = positionsFile ? parsePositionCsv(await positionsFile.text()) : [];
+    const printed = v.positions.find((r) => r[6] && r[5] > 0);
+    if (printed) v.session.file = printed[6];
+    this.cache.delete(id); this.cache.set(id, { mod: f.lastModified, size: f.size, positionVersion, v });
     if (this.cache.size > 2) this.cache.delete(this.cache.keys().next().value);
     return v;
   }
   async getSession(id) { return isFolderId(id) ? (await this._folderLoad(id)).session : this.inner.getSession(id); }
   async getSamples(id, kind = 'raw') {
-    if (isFolderId(id)) return kind === 'raw' ? (await this._folderLoad(id)).rows : [];
+    if (isFolderId(id)) { const v = await this._folderLoad(id); return kind === 'raw' ? v.rows : kind === 'pos' ? v.positions : []; }
     return this.inner.getSamples(id, kind);
   }
   async scanSamples(id, cb, kind = 'raw') {
-    if (isFolderId(id)) { if (kind === 'raw') cb((await this._folderLoad(id)).rows); } else await this.inner.scanSamples(id, cb, kind);
+    if (isFolderId(id)) { if (kind === 'raw' || kind === 'pos') cb(await this.getSamples(id, kind)); } else await this.inner.scanSamples(id, cb, kind);
   }
   // Copies a folder CSV into the browser database; returns the new session id.
   async importFromFolder(id) {
-    const { session, rows } = await this._folderLoad(id);
-    return this.inner.importSession({ ...session, id: undefined, source: 'folder import' }, rows);
+    const { session, rows, positions } = await this._folderLoad(id);
+    return this.inner.importSession({ ...session, id: undefined, source: 'folder import' }, rows, { pos: positions });
   }
   _queue(id, fn) {
     const p = (this.chains.get(id) || Promise.resolve()).then(fn).catch((e) => { this.onError(e); });
     this.chains.set(id, p); return p;
   }
-  // Raw samples go to <name>.csv; summary trace / layers / events go to <name>.summary.csv, .layers.csv, .events.csv.
+  // Other kinds use matching sidecars: .summary.csv, .layers.csv, .events.csv, .positions.csv.
   async _file(id, kind) {
     const key = `${id}:${kind}`;
     if (this.files.has(key)) return this.files.get(key);

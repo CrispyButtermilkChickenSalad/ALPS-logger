@@ -19,12 +19,12 @@ export class IdbDb {
 
   constructor(db) { this.db = db; }
 
-  // Close sessions left open by a crash / closed tab, ending them at their last sample.
+  // Close sessions left open by a crash / closed tab at their last sample or position poll.
   async _closeStale() {
     for (const s of await this.listSessions()) {
       if (s.ended != null) continue;
-      const rows = await this.getSamples(s.id), env = await this.getSamples(s.id, 'env');
-      const last = Math.max(rows.length ? rows[rows.length - 1][0] : s.started, env.length ? env[env.length - 1][0] : s.started);
+      const rows = await this.getSamples(s.id), env = await this.getSamples(s.id, 'env'), pos = await this.getSamples(s.id, 'pos');
+      const last = Math.max(...[rows, env, pos].map((r) => r.length ? r[r.length - 1][0] : s.started));
       const tx = this.db.transaction('sessions', 'readwrite');
       tx.objectStore('sessions').put({ ...s, ended: last });
       await done(tx);
@@ -56,7 +56,7 @@ export class IdbDb {
     await done(tx);
   }
 
-  // `extra` holds the non-raw kinds ({env, layer, evt}) of a backed-up session.
+  // `extra` holds the non-raw kinds ({env, layer, evt, pos}) of a backed-up session.
   async importSession(session, rows, extra = {}) {
     const { id, ...rest } = session;
     const tx = this.db.transaction(['sessions', 'chunks'], 'readwrite');

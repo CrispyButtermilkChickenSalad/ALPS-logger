@@ -89,11 +89,59 @@ test('moonraker poller parses state and reports outages', async () => {
   const updates = [];
   const ok = async () => ({ ok: true, json: async () => ({ result: { status: { print_stats: { state: 'printing', filename: 'f.gcode' }, toolhead: { position: [1, 2, 3.25, 0] } } } }) });
   await new MoonrakerPoller('http://h:7125/', (...a) => updates.push(a), { fetchFn: ok }).pollOnce();
-  assert.deepEqual(updates[0], ['printing', 'f.gcode', 3.25, true, 1, 2]);
+  assert.deepEqual(updates[0], ['printing', 'f.gcode', 3.25, true, 1, 2, { filePosition: null, fileSize: null }]);
   await new MoonrakerPoller('http://h:7125', (...a) => updates.push(a), { fetchFn: async () => { throw new Error('x'); } }).pollOnce();
   assert.deepEqual(updates[1], [null, null, null, false]);
   await new MoonrakerPoller('http://h:7125', (...a) => updates.push(a), { fetchFn: async () => ({ ok: false, status: 403 }) }).pollOnce();
   assert.equal(updates[2][3], false);
+});
+
+test('Moonraker captures file bytes alongside live XYZ and preserves G-code BOM', async () => {
+  const updates = [], urls = [];
+  const bytes = new TextEncoder().encode('\uFEFF; comment\r\nG1 X20\r\n');
+  const poller = new MoonrakerPoller('http://h:7125', (...a) => updates.push(a), { fetchFn: async (url) => {
+    urls.push(url);
+    return {
+      ok: true, arrayBuffer: async () => bytes.buffer,
+      json: async () => ({ result: { status: {
+        print_stats: { state: 'printing', filename: 'folder/a b.gcode' },
+        toolhead: { position: [10, 20, 30, 0] }, motion_report: { live_position: [1, 2, 3, 0] },
+        virtual_sdcard: { file_position: 17, file_size: 100 },
+      } } }),
+    };
+  } });
+  await poller.pollOnce();
+  assert.match(urls[0], /&virtual_sdcard/);
+  assert.deepEqual(updates[0], ['printing', 'folder/a b.gcode', 3, true, 1, 2, { filePosition: 17, fileSize: 100 }]);
+  assert.equal(await poller.fetchGcode('folder/a b.gcode'), '\uFEFF; comment\r\nG1 X20\r\n');
+  assert.match(urls[1], /folder\/a%20b\.gcode$/);
+});
+
+test('reported positions and file progress survive summary-only capture and outages', async () => {
+  const db = new MemoryDb(); let now = 100;
+  const rec = new Recorder(db, { now: () => now, flushInterval: 0 });
+  rec.setCapture({ mode: 'envelope' });
+  rec.onPrintUpdate('printing', 'part.gcode', 3, true, 1, 2, { filePosition: 10, fileSize: 50 });
+  const recording = rec.session;
+  rec.onSample(100, 90);
+  now++;
+  rec.onPrintUpdate(null, null, null, false);
+  now++;
+  rec.onPrintUpdate('paused', 'part.gcode', 3, true, 1, 2, { filePosition: 20, fileSize: 50 });
+  now++;
+  rec.onPrintUpdate('complete', 'part.gcode', 3, true, 1, 2, { filePosition: 50, fileSize: 50 });
+  await recording.chain;
+  const [s] = await db.listSessions();
+  assert.equal(s.file, 'part.gcode');
+  assert.equal(s.n, 0);
+  assert.equal(s.n_env, 1);
+  assert.equal(s.n_pos, 4);
+  assert.deepEqual(await db.getSamples(s.id, 'pos'), [
+    [100, 1, 2, 3, 10, 50, 'part.gcode', 'printing'],
+    [101, null, null, null, null, null, null, null],
+    [102, 1, 2, 3, 20, 50, 'part.gcode', 'paused'],
+    [103, 1, 2, 3, 50, 50, 'part.gcode', 'complete'],
+  ]);
 });
 
 test('mixed content detection', () => {

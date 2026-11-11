@@ -129,7 +129,7 @@ function toggleMoonraker(forceOn) {
   const url = $('mrUrl').value.trim();
   if (!/^https?:\/\//.test(url)) return alert('Enter a URL like http://192.168.1.50:7125');
   localStorage.setItem('mrUrl', url); localStorage.setItem('mrKey', $('mrKey').value); localStorage.setItem('mrEnabled', '1');
-  poller = new MoonrakerPoller(url, (s, f, z, ok, x, y) => rec.onPrintUpdate(s, f, z, ok, x, y), { apiKey: $('mrKey').value.trim() });
+  poller = new MoonrakerPoller(url, (...update) => rec.onPrintUpdate(...update), { apiKey: $('mrKey').value.trim() });
   poller.start(); moonrakerUi(true);
 }
 $('btnMr').onclick = () => toggleMoonraker(false);
@@ -308,6 +308,8 @@ async function downloadCsv(id) {
   download(toCsv(s, rows, calib, env), 'text/csv', base + '.csv');
   // Sidecar documents units and the calibration used, for research reproducibility.
   setTimeout(() => download(JSON.stringify(exportMeta(s, rows, calib, env), null, 2), 'application/json', base + '.meta.json'), 300);
+  const positions = await db.getSamples(id, 'pos');
+  if (positions.length) setTimeout(() => download(kindToCsv('pos', s, positions), 'text/csv', base + '.positions.csv'), 600);
 }
 async function downloadKind(id, kind) {
   const s = await db.getSession(id), calib = loadCalib(localStorage);

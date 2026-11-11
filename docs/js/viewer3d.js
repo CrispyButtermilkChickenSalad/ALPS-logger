@@ -28,7 +28,7 @@ export function toBins(values, lo, hi) {
 
 export class Viewer {
   constructor(canvas) {
-    this.cv = canvas; this.g = null; this.bins = null; this.cursor = null;
+    this.cv = canvas; this.g = null; this.bins = null; this.curve = null; this.curveBins = null; this.cursor = null;
     this.yaw = -0.6; this.pitch = 0.6; this.zoom = 1; this.pan = [0, 0];
     this.layerMax = Infinity; this.showTravel = false; this.dragging = false;
     this._raf = 0;
@@ -47,8 +47,9 @@ export class Viewer {
     canvas.addEventListener('dblclick', () => this.preset('iso'));
     new ResizeObserver(() => this.redraw()).observe(canvas);
   }
-  setModel(g) { this.g = g; this.bins = null; this.preset('iso'); }
-  setBins(bins) { this.bins = bins; this.redraw(); }
+  setModel(g) { this.g = g; this.bins = this.curve = this.curveBins = null; this.preset('iso'); }
+  setBins(bins) { this.bins = bins; this.curve = this.curveBins = null; this.redraw(); }
+  setCurve(curve, bins) { this.curve = curve; this.curveBins = bins; this.bins = null; this.redraw(); }
   setCursor(xyz) { this.cursor = xyz; this.redraw(); }
   preset(name) {
     const p = { iso: [-0.6, 0.6], top: [0, Math.PI / 2], front: [0, 0], side: [Math.PI / 2, 0] }[name] || [-0.6, 0.6];
@@ -73,6 +74,7 @@ export class Viewer {
     const PY = (x, y, z) => oy - ((z - cz) * cp + ((x - cx) * sy + (y - cy) * cy_) * sp) * sc;
     const end = Number.isFinite(this.layerMax) && this.layerMax + 1 < g.layerStart.length ? g.layerStart[this.layerMax + 1] : g.n;
     const step = this.dragging ? Math.max(1, Math.ceil(end / 80000)) : 1;
+    const curveStep = this.dragging && this.curve ? Math.max(1, Math.ceil(this.curve.n / 80000)) : 1;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const colors = Array.from({ length: NBINS }, (_, i) => binColor(i));
     const style = (bin) => {
@@ -80,14 +82,26 @@ export class Viewer {
       else { ctx.strokeStyle = bin === NO_DATA ? '#5b616b' : colors[bin]; ctx.lineWidth = Math.max(0.8, Math.min(3, sc * 0.45)); }
     };
     let cur = -1, open = false;
+    const stroke = (i, from, to, bin) => {
+      if (to <= from) return;
+      if (bin !== cur) { if (open) ctx.stroke(); ctx.beginPath(); style(bin); cur = bin; open = true; }
+      const x = g.x0[i], y = g.y0[i], z = g.z0[i], dx = g.x1[i] - x, dy = g.y1[i] - y, dz = g.z1[i] - z;
+      ctx.moveTo(PX(x + dx * from, y + dy * from), PY(x + dx * from, y + dy * from, z + dz * from));
+      ctx.lineTo(PX(x + dx * to, y + dy * to), PY(x + dx * to, y + dy * to, z + dz * to));
+    };
     for (let i = 0; i < end; i += step) {
       const f = g.flags[i];
       if (f & 4) continue;
-      let bin;
-      if (!(f & 1)) { if (!this.showTravel) continue; bin = 254; } else bin = this.bins ? this.bins[i] : NO_DATA;
-      if (bin !== cur) { if (open) ctx.stroke(); ctx.beginPath(); style(bin); cur = bin; open = true; }
-      ctx.moveTo(PX(g.x0[i], g.y0[i]), PY(g.x0[i], g.y0[i], g.z0[i]));
-      ctx.lineTo(PX(g.x1[i], g.y1[i]), PY(g.x1[i], g.y1[i], g.z1[i]));
+      if (!(f & 1) && !this.showTravel) continue;
+      if (this.curve) {
+        let from = 0;
+        for (let k = this.curve.offsets[i]; k < this.curve.offsets[i + 1]; k += curveStep) {
+          stroke(i, from, this.curve.f0[k], NO_DATA);
+          stroke(i, this.curve.f0[k], this.curve.f1[k], this.curveBins[k]);
+          from = this.curve.f1[k];
+        }
+        stroke(i, from, 1, NO_DATA);
+      } else stroke(i, 0, 1, !(f & 1) ? 254 : this.bins ? this.bins[i] : NO_DATA);
     }
     if (open) ctx.stroke();
     // bed outline for orientation

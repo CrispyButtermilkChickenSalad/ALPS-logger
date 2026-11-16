@@ -5,12 +5,13 @@ import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB, DEFAULT_COUNTS_PER_GRAM } from './calib.js';
+import { fetchKlipperCalibration } from './klipper.js';
 import { simulateTilt, drawTilt, drawAngleSweep, nozzleGeometry, drawNozzleGeometry } from './tilt_sim.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3)) : '–');
 
-export function initTabs({ db, live }) {
+export function initTabs({ db, live, klipper = () => null }) {
   let calib = loadCalib(localStorage);
   const S = { id: null, session: null, cols: null, rawCols: null, rawReady: null, rawError: null, curve: null, poses: null, positions: [], g: null, gName: '', map: null, agg: null, aggSignal: null, autoTare: NaN };
   let viewer = null, pa = null;
@@ -424,6 +425,24 @@ export function initTabs({ db, live }) {
     const fit = fitCalibration(calib.points); if (!fit) return;
     calib.tare = fit.tare; calib.countsPerGram = fit.countsPerGram; calib.estimated = false; persist();
   };
+  // Only offered while a Klipper-connected ALPS is the active source (USB/simulator have no Klipper config).
+  const syncKlipperImport = () => {
+    const on = !!klipper();
+    $('cKlImport').hidden = !on;
+    if (!on) $('cKlState').hidden = true;
+  };
+  $('cKlImport').onclick = async () => {
+    const k = klipper();
+    if (!k) return syncKlipperImport();
+    const st = $('cKlState'); st.hidden = false; st.className = 'pill'; st.textContent = 'reading Klipper config…';
+    try {
+      const c = await fetchKlipperCalibration(k);
+      calib.countsPerGram = c.countsPerGram; calib.estimated = false; calib.invert = c.invert;
+      if (c.tare != null) calib.tare = c.tare;
+      persist();
+      st.textContent = `imported from [${c.section}]: ${fmtV(c.countsPerGram)} counts/g${c.tare != null ? ', tare ' + fmtV(c.tare) : ''}${c.invert ? ', inverted' : ''}`;
+    } catch (e) { st.className = 'pill bad'; st.textContent = 'import failed: ' + e.message; }
+  };
   $('cReset').onclick = () => { if (confirm(`Reset to the default ${DEFAULT_COUNTS_PER_GRAM} counts/g and clear tare and points?`)) { calib = { ...DEFAULT_CALIB, points: [] }; persist(); } };
   $('cScaleSet').onclick = () => {
     const v = Number($('cScale').value.trim());
@@ -455,6 +474,7 @@ export function initTabs({ db, live }) {
   };
 
   setInterval(() => {
+    syncKlipperImport();
     if ($('tab-calib').hidden) return;
     const r = recent(+$('cAvg').value);
     if (!r) { $('cVal').textContent = '–'; return; }

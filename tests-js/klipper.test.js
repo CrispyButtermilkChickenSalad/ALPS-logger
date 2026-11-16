@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Recorder } from '../docs/js/recorder.js';
 import { MemoryDb } from '../docs/js/db.js';
-import { KlipperBridgeSource, KlipperPollSource, statusToCounts, defaultBridgeUrl } from '../docs/js/klipper.js';
+import { KlipperBridgeSource, KlipperPollSource, statusToCounts, defaultBridgeUrl, findLoadCellSection, calibFromKlipperSection, fetchKlipperCalibration } from '../docs/js/klipper.js';
 
 test('statusToCounts needs a calibrated and tared load cell', () => {
   assert.equal(statusToCounts({ is_calibrated: false, counts_per_gram: 138, tare_counts: null }), null);
@@ -78,4 +78,17 @@ test('poll source records counts once Klipper reports force, and fails over afte
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(rec.connected, false);
   assert.match(rec.deviceError, /offline/);
+});
+
+test('Klipper config import reads load cell calibration', async () => {
+  const settings = { load_cell_probe: { counts_per_gram: 138.5, reference_tare_counts: -674000, sensor_orientation: 'inverted', trigger_force: 75 } };
+  assert.equal(findLoadCellSection(settings, 'load_cell_probe').name, 'load_cell_probe');
+  assert.deepEqual(calibFromKlipperSection(settings.load_cell_probe), { countsPerGram: 138.5, tare: -674000, invert: true, triggerForce: 75 });
+  assert.equal(calibFromKlipperSection({ sensor_orientation: 'normal' }), null);
+  assert.equal(findLoadCellSection({ 'load_cell x': { counts_per_gram: 1 } }, 'load_cell_probe x').name, 'load_cell x');
+  const ok = (body) => async () => ({ ok: true, json: async () => body });
+  const r = await fetchKlipperCalibration({ url: 'http://k/', fetchFn: ok({ result: { status: { configfile: { settings } } } }) });
+  assert.equal(r.countsPerGram, 138.5);
+  await assert.rejects(fetchKlipperCalibration({ url: 'http://k', fetchFn: ok({ result: { status: { configfile: { settings: {} } } } }) }), /no \[load_cell_probe\]/);
+  await assert.rejects(fetchKlipperCalibration({ url: 'http://k', fetchFn: ok({ result: { status: { configfile: { settings: { load_cell_probe: {} } } } } }) }), /counts_per_gram/);
 });

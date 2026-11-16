@@ -22,6 +22,47 @@ export function statusToCounts(st) {
   return { mean: c(st.force_g), min: c(st.min_force_g ?? st.force_g), max: c(st.max_force_g ?? st.force_g) };
 }
 
+// Looks up the cell's section in Klipper's parsed config ("settings" from Moonraker's configfile object, keys are
+// lower-cased). counts_per_gram / reference_tare_counts live in [load_cell] or directly in [load_cell_probe].
+export function findLoadCellSection(settings, cell = 'load_cell_probe') {
+  if (!settings) return null;
+  const want = String(cell).trim().toLowerCase();
+  const names = [want];
+  const name = want.split(/\s+/).slice(1).join(' ');
+  if (want.startsWith('load_cell_probe')) names.push(name ? `load_cell ${name}` : 'load_cell');
+  for (const n of names) if (settings[n] && settings[n].counts_per_gram != null) return { name: n, section: settings[n] };
+  for (const n of names) if (settings[n]) return { name: n, section: settings[n] };
+  return null;
+}
+
+// Converts a load cell config section to the calibration fields; returns null if it holds no counts_per_gram.
+export function calibFromKlipperSection(sec) {
+  const cpg = Number(sec && sec.counts_per_gram);
+  if (!(Number.isFinite(cpg) && cpg > 0)) return null;
+  const tare = sec.reference_tare_counts == null ? NaN : Number(sec.reference_tare_counts);
+  return {
+    countsPerGram: cpg,
+    tare: Number.isFinite(tare) ? tare : null,
+    invert: String(sec.sensor_orientation || '').trim().toLowerCase() === 'inverted',
+    triggerForce: Number.isFinite(Number(sec.trigger_force)) && sec.trigger_force != null ? Number(sec.trigger_force) : null,
+  };
+}
+
+// Reads the running Klipper config through Moonraker. Throws a readable error when nothing usable is found.
+export async function fetchKlipperCalibration({ url, cell = 'load_cell_probe', apiKey = '', fetchFn = (...a) => fetch(...a) }) {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 5000);
+  try {
+    const headers = apiKey ? { 'X-Api-Key': apiKey } : {};
+    const r = await fetchFn(`${trimUrl(url)}/printer/objects/query?configfile=settings`, { headers, signal: ctl.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const found = findLoadCellSection(((await r.json()).result.status.configfile || {}).settings, cell);
+    if (!found) throw new Error(`no [${cell}] section in the Klipper config`);
+    const c = calibFromKlipperSection(found.section);
+    if (!c) throw new Error(`[${found.name}] has no counts_per_gram yet: run LOAD_CELL_CALIBRATE and SAVE_CONFIG in Klipper first`);
+    return { ...c, section: found.name };
+  } finally { clearTimeout(to); }
+}
+
 export class KlipperPollSource {
   constructor(rec, { url, cell = 'load_cell_probe', apiKey = '', interval = 200, fetchFn = (...a) => fetch(...a) } = {}) {
     Object.assign(this, { rec, base: trimUrl(url), cell, apiKey, interval, fetch: fetchFn, running: false, warned: false });

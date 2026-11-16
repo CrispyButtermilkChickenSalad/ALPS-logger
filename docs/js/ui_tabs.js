@@ -5,12 +5,13 @@ import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
 import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB, DEFAULT_COUNTS_PER_GRAM } from './calib.js';
+import { fetchKlipperCalibration } from './klipper.js';
 import { simulateTilt, drawTilt, drawAngleSweep, nozzleGeometry, drawNozzleGeometry } from './tilt_sim.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtV = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3)) : '–');
 
-export function initTabs({ db, live }) {
+export function initTabs({ db, live, klipper = () => null }) {
   let calib = loadCalib(localStorage);
   const S = { id: null, session: null, cols: null, rawCols: null, rawReady: null, rawError: null, curve: null, poses: null, positions: [], g: null, gName: '', map: null, agg: null, aggSignal: null, autoTare: NaN };
   let viewer = null, pa = null;
@@ -424,6 +425,40 @@ export function initTabs({ db, live }) {
     const fit = fitCalibration(calib.points); if (!fit) return;
     calib.tare = fit.tare; calib.countsPerGram = fit.countsPerGram; calib.estimated = false; persist();
   };
+  // Klipper-connected ALPS only (USB/simulator have no Klipper config). On connect the values are read and applied
+  // automatically; afterwards Klipper is re-checked every few seconds and, if its values changed, the button
+  // offers to update them.
+  let klSeen = null, klPending = null, klBusy = false, klLast = 0;
+  const klSig = (c) => `${c.countsPerGram}|${c.tare}|${c.invert}`;
+  const klDesc = (c) => `[${c.section}] (${c.source}): ${fmtV(c.countsPerGram)} counts/g${c.tare != null ? ', tare ' + fmtV(c.tare) : ''}${c.invert ? ', inverted' : ''}`;
+  const klApply = (c) => {
+    calib.countsPerGram = c.countsPerGram; calib.estimated = false; calib.invert = c.invert;
+    if (c.tare != null) calib.tare = c.tare;
+    klSeen = klSig(c); klPending = null; persist();
+  };
+  function klUi(msg, cls = '') {
+    const btn = $('cKlImport'), st = $('cKlState');
+    btn.textContent = klPending ? 'Update values from Klipper' : 'Re-read from Klipper';
+    btn.className = klPending ? 'primary' : '';
+    st.hidden = !msg; st.className = 'pill ' + cls; st.textContent = msg || '';
+  }
+  async function checkKlipper(manual) {
+    const k = klipper();
+    if (!k) { klSeen = klPending = null; $('cKlImport').hidden = true; $('cKlState').hidden = true; return; }
+    $('cKlImport').hidden = false;
+    if (klBusy) return;
+    klBusy = true; klLast = Date.now();
+    try {
+      const c = await fetchKlipperCalibration(k);
+      if (manual && klPending) { klApply(c); klUi('updated from ' + klDesc(c), 'ok'); }
+      else if (klSeen === null || manual) { klApply(c); klUi((manual ? 'read ' : 'auto-imported ') + klDesc(c), 'ok'); }
+      else if (klSig(c) !== klSeen) { klPending = { c }; klUi('Klipper values changed: ' + klDesc(c), 'bad'); }
+      else if (!klPending) klUi('in sync with Klipper ' + klDesc(c), 'ok');
+    } catch (e) { if (manual || klSeen === null) klUi('Klipper read failed: ' + e.message, 'bad'); }
+    finally { klBusy = false; }
+  }
+  const syncKlipperImport = () => { if (!klipper()) return checkKlipper(false); if (Date.now() - klLast > (klSeen === null ? 5000 : 8000)) checkKlipper(false); };
+  $('cKlImport').onclick = () => checkKlipper(true);
   $('cReset').onclick = () => { if (confirm(`Reset to the default ${DEFAULT_COUNTS_PER_GRAM} counts/g and clear tare and points?`)) { calib = { ...DEFAULT_CALIB, points: [] }; persist(); } };
   $('cScaleSet').onclick = () => {
     const v = Number($('cScale').value.trim());
@@ -455,6 +490,7 @@ export function initTabs({ db, live }) {
   };
 
   setInterval(() => {
+    syncKlipperImport();
     if ($('tab-calib').hidden) return;
     const r = recent(+$('cAvg').value);
     if (!r) { $('cVal').textContent = '–'; return; }

@@ -307,6 +307,8 @@
         <label>Unit <select id="cUnitSel"><option>g</option><option>N</option><option>kg</option></select></label>
         <label><input id="cInvert" type="checkbox"> invert sign</label>
         <button id="cReset" class="danger">Reset to default (138 counts/g)</button>
+        <button id="cKlImport" hidden title="Reads counts_per_gram, reference_tare_counts and sensor_orientation from the connected Klipper's load cell; applied automatically on connect, and offered as an update when Klipper changes">Import from Klipper</button>
+        <span id="cKlState" class="pill" hidden></span>
       </div>
       <div class="row">
         <label>Counts per gram <input id="cScale" type="number" min="0" step="any" value="138" style="width:100px"></label>

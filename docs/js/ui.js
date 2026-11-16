@@ -597,7 +597,10 @@ function initCapture() {
     rec.setAutoRecord($('autoRecord').checked);
   };
   initCapture();
-  tabsApi = initTabs({ db, live });
+  tabsApi = initTabs({ db, live, klipper: () => {
+    if (!rec.connected || !/^Klipper/.test(String(rec.status().version))) return null;
+    return { url: $('klUrl').value.trim().replace(/\/+$/, ''), cell: $('klCell').value.trim() || 'load_cell_probe', apiKey: $('mrKey').value.trim() };
+  } });
   initDurability();
   rec.onsample = pushLive;
   rec.onchange = onChange;

@@ -89,6 +89,9 @@ test('Klipper config import reads load cell calibration', async () => {
   const ok = (body) => async () => ({ ok: true, json: async () => body });
   const r = await fetchKlipperCalibration({ url: 'http://k/', fetchFn: ok({ result: { status: { configfile: { settings } } } }) });
   assert.equal(r.countsPerGram, 138.5);
+  assert.equal(r.source, 'config');
+  const live = await fetchKlipperCalibration({ url: 'http://k', fetchFn: ok({ result: { status: { load_cell_probe: { is_calibrated: true, counts_per_gram: 140, reference_tare_counts: -1 }, configfile: { settings } } } }) });
+  assert.deepEqual([live.countsPerGram, live.tare, live.invert, live.source], [140, -1, true, 'live']);
   await assert.rejects(fetchKlipperCalibration({ url: 'http://k', fetchFn: ok({ result: { status: { configfile: { settings: {} } } } }) }), /no \[load_cell_probe\]/);
   await assert.rejects(fetchKlipperCalibration({ url: 'http://k', fetchFn: ok({ result: { status: { configfile: { settings: { load_cell_probe: {} } } } } }) }), /counts_per_gram/);
 });

@@ -48,18 +48,25 @@ export function calibFromKlipperSection(sec) {
   };
 }
 
-// Reads the running Klipper config through Moonraker. Throws a readable error when nothing usable is found.
+// Reads the live load cell object (what LOAD_CELL_CALIBRATE set, even before SAVE_CONFIG) and the saved config
+// through Moonraker. Live values win; the config supplies anything missing (e.g. sensor_orientation).
 export async function fetchKlipperCalibration({ url, cell = 'load_cell_probe', apiKey = '', fetchFn = (...a) => fetch(...a) }) {
   const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 5000);
   try {
     const headers = apiKey ? { 'X-Api-Key': apiKey } : {};
-    const r = await fetchFn(`${trimUrl(url)}/printer/objects/query?configfile=settings`, { headers, signal: ctl.signal });
+    const r = await fetchFn(`${trimUrl(url)}/printer/objects/query?${encodeURIComponent(cell)}&configfile=settings`, { headers, signal: ctl.signal });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const found = findLoadCellSection(((await r.json()).result.status.configfile || {}).settings, cell);
-    if (!found) throw new Error(`no [${cell}] section in the Klipper config`);
-    const c = calibFromKlipperSection(found.section);
-    if (!c) throw new Error(`[${found.name}] has no counts_per_gram yet: run LOAD_CELL_CALIBRATE and SAVE_CONFIG in Klipper first`);
-    return { ...c, section: found.name };
+    const st = (await r.json()).result.status;
+    const found = findLoadCellSection((st.configfile || {}).settings, cell);
+    const live = st[cell] && st[cell].is_calibrated !== false ? st[cell] : null;
+    const fromCfg = found ? calibFromKlipperSection(found.section) : null;
+    const fromLive = live ? calibFromKlipperSection({ counts_per_gram: live.counts_per_gram, reference_tare_counts: live.reference_tare_counts ?? live.tare_counts }) : null;
+    if (!fromCfg && !fromLive) {
+      if (!found && !st[cell]) throw new Error(`no [${cell}] section in the Klipper config`);
+      throw new Error(`[${found ? found.name : cell}] has no counts_per_gram yet: run LOAD_CELL_CALIBRATE (and SAVE_CONFIG) in Klipper first`);
+    }
+    const base = fromLive || fromCfg;
+    return { ...(fromCfg || {}), ...base, tare: base.tare ?? (fromCfg && fromCfg.tare) ?? null, invert: fromCfg ? fromCfg.invert : false, section: found ? found.name : cell, source: fromLive ? 'live' : 'config' };
   } finally { clearTimeout(to); }
 }
 

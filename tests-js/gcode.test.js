@@ -335,8 +335,10 @@ test('extractPoses keeps only changed positions', () => {
 test('percentile', () => assert.equal(percentile([5, 1, 3, NaN], 50), 3));
 
 test('calibration fit, units and defaults', () => {
-  assert.equal(isCalibrated(DEFAULT_CALIB), false);
-  assert.equal(toUnits(-670000, DEFAULT_CALIB, -674000), 4000);
+  assert.equal(isCalibrated(DEFAULT_CALIB), true);
+  assert.equal(DEFAULT_CALIB.countsPerGram, 138);
+  assert.equal(toUnits(-670000, DEFAULT_CALIB, -674000), 4000 / 138);
+  assert.equal(toUnits(-670000, { ...DEFAULT_CALIB, countsPerGram: null }, -674000), 4000);
   const pts = [0, 500, 1000, 2000].map((grams) => ({ grams, counts: -674000 + 73.5 * grams }));
   const fit = fitCalibration(pts);
   assert.ok(Math.abs(fit.countsPerGram - 73.5) < 1e-6 && Math.abs(fit.tare + 674000) < 1e-6 && fit.r2 > 0.999999);

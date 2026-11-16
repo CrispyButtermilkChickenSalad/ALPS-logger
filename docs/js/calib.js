@@ -1,10 +1,13 @@
-// Counts -> force calibration. Default is "arbitrary counts" (no scale) until the user calibrates.
+// Counts -> force calibration. Defaults to 138 counts/g (editable); tare is captured live, or auto-zeroed when absent.
 
 // ADS131M02: 24-bit, full-scale +/-1.2 V / gain  ->  1.2 V / 2^23 per count at gain 1 (TI datasheet).
 export const VOLTS_PER_COUNT_G1 = 1.2 / 2 ** 23;
 export const G_TO_N = 0.00980665;
 
-export const DEFAULT_CALIB = { tare: null, countsPerGram: null, unit: 'g', invert: false, points: [], estimated: false };
+// Default scale taken from a known Klipper load-cell configuration; the user can change it or fit their own.
+export const DEFAULT_COUNTS_PER_GRAM = 138;
+
+export const DEFAULT_CALIB = { tare: null, countsPerGram: DEFAULT_COUNTS_PER_GRAM, unit: 'g', invert: false, points: [], estimated: false };
 
 export function snapshotCalibration(value) {
   if (value == null) return null;
@@ -66,6 +69,10 @@ export const REFERENCE_NOTES = [
 ];
 
 export function loadCalib(storage) {
-  try { return { ...DEFAULT_CALIB, ...JSON.parse(storage.getItem('alpsCalib') || '{}') }; } catch { return { ...DEFAULT_CALIB }; }
+  try {
+    const c = { ...DEFAULT_CALIB, ...JSON.parse(storage.getItem('alpsCalib') || '{}') };
+    if (c.countsPerGram == null) c.countsPerGram = DEFAULT_COUNTS_PER_GRAM;
+    return c;
+  } catch { return { ...DEFAULT_CALIB }; }
 }
 export function saveCalib(storage, c) { storage.setItem('alpsCalib', JSON.stringify(c)); }

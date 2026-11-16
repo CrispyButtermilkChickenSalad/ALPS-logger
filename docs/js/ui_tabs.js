@@ -4,7 +4,7 @@ import { Viewer, toBins, gradientCss } from './viewer3d.js';
 import { initPa } from './ui_pa.js';
 import { fillSessionSelect, parseSessionId } from './persist.js';
 import { MoonrakerPoller } from './moonraker.js';
-import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB } from './calib.js';
+import { loadCalib, saveCalib, fitCalibration, toUnits, isCalibrated, unitLabel, estimateCountsPerGram, REFERENCE_NOTES, DEFAULT_CALIB, DEFAULT_COUNTS_PER_GRAM } from './calib.js';
 import { simulateTilt, drawTilt, drawAngleSweep, nozzleGeometry, drawNozzleGeometry } from './tilt_sim.js';
 
 const $ = (id) => document.getElementById(id);
@@ -387,7 +387,10 @@ export function initTabs({ db, live }) {
   function renderCalib() {
     $('cUnitSel').value = calib.unit; $('cInvert').checked = calib.invert;
     $('cUnit').textContent = unitLabel(calib);
-    $('cState').textContent = isCalibrated(calib) ? `${calib.estimated ? 'ESTIMATED' : 'calibrated'}: ${fmtV(calib.countsPerGram)} counts/g, tare ${fmtV(calib.tare)}` : `arbitrary counts (uncalibrated)${Number.isFinite(calib.tare) ? ', tare ' + fmtV(calib.tare) : ''}`;
+    const tareTxt = Number.isFinite(calib.tare) ? `tare ${fmtV(calib.tare)}` : 'no tare captured (G-code view zeroes to the session median)';
+    const kind = calib.countsPerGram === DEFAULT_COUNTS_PER_GRAM && !calib.estimated ? 'default' : calib.estimated ? 'ESTIMATED' : 'custom';
+    $('cState').textContent = isCalibrated(calib) ? `${kind}: ${fmtV(calib.countsPerGram)} counts/g, ${tareTxt}` : `arbitrary counts (no scale), ${tareTxt}`;
+    if (document.activeElement !== $('cScale')) $('cScale').value = Number.isFinite(calib.countsPerGram) ? calib.countsPerGram : '';
     const tb = $('cPts'); tb.innerHTML = '';
     calib.points.forEach((p, i) => {
       const tr = document.createElement('tr');
@@ -421,7 +424,12 @@ export function initTabs({ db, live }) {
     const fit = fitCalibration(calib.points); if (!fit) return;
     calib.tare = fit.tare; calib.countsPerGram = fit.countsPerGram; calib.estimated = false; persist();
   };
-  $('cReset').onclick = () => { if (confirm('Reset to arbitrary counts?')) { calib = { ...DEFAULT_CALIB, points: [] }; persist(); } };
+  $('cReset').onclick = () => { if (confirm(`Reset to the default ${DEFAULT_COUNTS_PER_GRAM} counts/g and clear tare and points?`)) { calib = { ...DEFAULT_CALIB, points: [] }; persist(); } };
+  $('cScaleSet').onclick = () => {
+    const v = Number($('cScale').value.trim());
+    if (!Number.isFinite(v) || v <= 0) return alert('Enter a positive counts-per-gram value.');
+    calib.countsPerGram = v; calib.estimated = false; persist();
+  };
   $('cUnitSel').onchange = () => { calib.unit = $('cUnitSel').value; persist(); };
   $('cInvert').onchange = () => { calib.invert = $('cInvert').checked; persist(); };
 

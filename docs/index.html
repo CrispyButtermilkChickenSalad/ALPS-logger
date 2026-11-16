@@ -298,7 +298,7 @@
         <span class="big" id="cVal">–</span><span id="cUnit" class="pill">counts</span>
         <span class="pill" id="cNoise">noise –</span>
         <label>Average over <select id="cAvg"><option value="1">1 s</option><option value="3" selected>3 s</option><option value="10">10 s</option></select></label>
-        <span class="pill" id="cState">arbitrary counts (uncalibrated)</span>
+        <span class="pill" id="cState">138 counts/g (default)</span>
       </div>
       <div class="row">
         <button id="cTare">Capture tare (no load)</button>
@@ -306,7 +306,12 @@
         <button id="cPoint">Capture point</button>
         <label>Unit <select id="cUnitSel"><option>g</option><option>N</option><option>kg</option></select></label>
         <label><input id="cInvert" type="checkbox"> invert sign</label>
-        <button id="cReset" class="danger">Reset to arbitrary counts</button>
+        <button id="cReset" class="danger">Reset to default (138 counts/g)</button>
+      </div>
+      <div class="row">
+        <label>Counts per gram <input id="cScale" type="number" min="0" step="any" value="138" style="width:100px"></label>
+        <button id="cScaleSet">Set</button>
+        <span class="hint" style="margin:0">Default 138 counts/g comes from a known Klipper load-cell configuration. Edit it, or capture tare + known masses below and Apply fit to replace it with your own.</span>
       </div>
       <p class="hint">Connect the device (or simulator), unload the toolhead, capture the tare, then press with known masses (a scale under the nozzle works) and capture each point. At least two points (one can be 0 g) give counts/gram.</p>
     </section>
